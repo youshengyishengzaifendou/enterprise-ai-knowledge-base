@@ -203,7 +203,7 @@ const toolDefinitions: ToolDefinition[] = [
   {
     name: "kb_answer",
     description:
-      "Use first for enterprise knowledge-base questions and short business fact questions, especially deadlines such as '帮我查看一下商品主数据什么时候提交', '商品主数据什么时候提交', '模板几号提交', or '恒润项目知识库'. Answer from data.answer as one concise sentence; include citations only when the user asks for sources.",
+      "Use first for enterprise knowledge-base questions and short business fact questions, including latest/recent/current status questions such as 最新、最近、动态、情况、变化、进展, and deadlines such as '帮我查看一下商品主数据什么时候提交', '商品主数据什么时候提交', '模板几号提交', or '恒润项目知识库'. Answer from data.answer as one concise sentence; include citations only when the user asks for sources.",
     optional: false,
     parameters: schemas.kb_answer,
   },
