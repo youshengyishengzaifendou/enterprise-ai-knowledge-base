@@ -1,0 +1,67 @@
+{
+  "id": "enterprise-ai-assistant",
+  "activation": {
+    "onStartup": true
+  },
+  "enabledByDefault": true,
+  "name": "Enterprise AI Assistant",
+  "version": "0.1.0",
+  "description": "Customer, project progress, task, and brief tools backed by the enterprise AI assistant API.",
+  "entry": "dist/index.js",
+  "skills": [
+    "./skills"
+  ],
+  "contracts": {
+    "tools": [
+      "customer_search",
+      "project_search",
+      "project_extract_update",
+      "project_add_update",
+      "task_create",
+      "project_get_brief",
+      "confirm_action",
+      "kb_ingest_document",
+      "record_enterprise_knowledge",
+      "kb_search",
+      "kb_answer"
+    ]
+  },
+  "uiHints": {
+    "backendUrl": {
+      "label": "Backend URL",
+      "help": "Enterprise AI Assistant backend base URL, for example http://127.0.0.1:8000."
+    },
+    "apiKey": {
+      "label": "Agent Tool API Key",
+      "help": "Bearer API key used by the backend Agent Tool API.",
+      "sensitive": true
+    }
+  },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        {
+          "path": "apiKey",
+          "expected": "string"
+        }
+      ]
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "backendUrl": {
+        "type": "string",
+        "description": "Enterprise AI Assistant backend base URL."
+      },
+      "apiKey": {
+        "type": [
+          "string",
+          "object"
+        ],
+        "description": "Bearer API key for the backend Agent Tool API. Plaintext or OpenClaw SecretRef."
+      }
+    }
+  }
+}

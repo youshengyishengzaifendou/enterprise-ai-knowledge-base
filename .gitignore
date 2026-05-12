@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+node_modules/
+dist/
+
+.env
+*.db
+*.db-*
+*.db.bak*
+
+# Local runtime artifacts
+*.log
+tmp/
+uploads/
+
+# Frontend/backend generated output
+coverage/
+build/
+.cache/

@@ -1,0 +1,20 @@
+{
+  "name": "enterprise-ai-assistant",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin wrapper for Enterprise AI Assistant Agent Tool APIs",
+  "type": "module",
+  "main": "dist/index.js",
+  "openclaw": {
+    "extensions": ["./dist/index.js"]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}

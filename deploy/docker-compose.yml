@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: enterprise_ai_assistant
+      POSTGRES_USER: enterprise_ai
+      POSTGRES_PASSWORD: enterprise_ai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: ../backend
+    environment:
+      APP_ENV: local
+      DATABASE_URL: postgresql+psycopg://enterprise_ai:enterprise_ai@postgres:5432/enterprise_ai_assistant
+      AGENT_TOOL_API_KEY: dev-agent-tool-key
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  postgres_data:
+
