@@ -8,9 +8,6 @@
   "version": "0.1.0",
   "description": "Customer, project progress, task, and brief tools backed by the enterprise AI assistant API.",
   "entry": "dist/index.js",
-  "skills": [
-    "./skills"
-  ],
   "contracts": {
     "tools": [
       "customer_search",

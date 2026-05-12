@@ -21,3 +21,10 @@ uploads/
 coverage/
 build/
 .cache/
+
+# Local/private markdown docs are intentionally not published.
+doc/
+docs/
+memory/
+agent/openclaw-plugin/README.md
+agent/openclaw-plugin/skills/

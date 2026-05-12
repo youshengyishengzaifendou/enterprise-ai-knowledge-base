@@ -244,12 +244,13 @@ agent 结果的 toolSummary.tools 包含 kb_answer
 短问句回答：商品主数据模板5月13日前提交。
 ```
 
-如果短问句没有触发 `kb_answer`，通常是 OpenClaw 已安装插件里缺少随插件发布的 `skills` 目录。以 root 用户同步插件目录并重启 gateway：
+如果短问句没有触发 `kb_answer`，重新构建并同步插件目录后重启 gateway：
 
 ```bash
 cd agent/openclaw-plugin
 npm run build
-sudo cp -a openclaw.plugin.json package.json package-lock.json dist skills /root/.openclaw/extensions/enterprise-ai-assistant/
+sudo mkdir -p /root/.openclaw/extensions/enterprise-ai-assistant
+sudo cp -a openclaw.plugin.json package.json package-lock.json dist /root/.openclaw/extensions/enterprise-ai-assistant/
 sudo chown -R root:root /root/.openclaw/extensions/enterprise-ai-assistant
 openclaw gateway restart
 ```

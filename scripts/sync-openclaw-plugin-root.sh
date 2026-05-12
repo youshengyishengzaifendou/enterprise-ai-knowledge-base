@@ -16,7 +16,7 @@ npm run build
 
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-cp -a openclaw.plugin.json package.json package-lock.json dist skills "$INSTALL_DIR"/
+cp -a openclaw.plugin.json package.json package-lock.json dist "$INSTALL_DIR"/
 chown -R root:root "$INSTALL_DIR"
 
 node --input-type=module <<'NODE'
