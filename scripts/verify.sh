@@ -12,3 +12,7 @@ DATABASE_URL="sqlite:///$TMP_DB" .venv/bin/alembic upgrade head
 cd "$ROOT_DIR/agent/openclaw-plugin"
 npm run build
 npm audit --audit-level=moderate
+
+cd "$ROOT_DIR/frontend"
+npm run build
+npm audit --audit-level=moderate

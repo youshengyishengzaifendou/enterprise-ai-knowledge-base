@@ -9,11 +9,19 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone <your-github-repo-url>
-cd <repo-name>
+git clone git@github.com:youshengyishengzaifendou/enterprise-ai-knowledge-base.git
+cd enterprise-ai-knowledge-base
 ```
 
 ### 2. 启动后端
+
+推荐先运行本地初始化脚本：
+
+```bash
+./scripts/setup-local.sh
+```
+
+也可以手动执行：
 
 ```bash
 cd backend
@@ -34,8 +42,6 @@ curl -X POST http://127.0.0.1:8000/api/dev/seed-demo
 
 ```bash
 cd agent/openclaw-plugin
-npm install
-npm run build
 openclaw plugins install --link "$(pwd)"
 openclaw plugins enable enterprise-ai-assistant
 openclaw plugins doctor
@@ -138,7 +144,7 @@ npm install
 npm run dev -- --host 127.0.0.1
 ```
 
-浏览器打开 Vite 输出的本地地址，默认后端地址为 `http://127.0.0.1:8000`。如果后端配置了 `AGENT_TOOL_API_KEY`，在页面顶部填写同一个 API Key。
+浏览器打开 Vite 输出的本地地址。前端默认会优先连接 `http://127.0.0.1:8001`，并自动回退到 `http://127.0.0.1:8000`。如果后端配置了 `AGENT_TOOL_API_KEY`，在页面顶部填写同一个 API Key。
 
 ## OpenClaw 插件
 
@@ -148,7 +154,7 @@ npm run dev -- --host 127.0.0.1
 cd agent/openclaw-plugin
 npm install
 npm run build
-openclaw plugins install /home/tzh/project/agent/openclaw-plugin
+openclaw plugins install --link "$(pwd)"
 openclaw plugins enable enterprise-ai-assistant
 openclaw plugins doctor
 ```
@@ -241,10 +247,10 @@ agent 结果的 toolSummary.tools 包含 kb_answer
 如果短问句没有触发 `kb_answer`，通常是 OpenClaw 已安装插件里缺少随插件发布的 `skills` 目录。以 root 用户同步插件目录并重启 gateway：
 
 ```bash
-cd /home/tzh/project/agent/openclaw-plugin
+cd agent/openclaw-plugin
 npm run build
-cp -a openclaw.plugin.json package.json package-lock.json dist skills /root/.openclaw/extensions/enterprise-ai-assistant/
-chown -R root:root /root/.openclaw/extensions/enterprise-ai-assistant
+sudo cp -a openclaw.plugin.json package.json package-lock.json dist skills /root/.openclaw/extensions/enterprise-ai-assistant/
+sudo chown -R root:root /root/.openclaw/extensions/enterprise-ai-assistant
 openclaw gateway restart
 ```
 
@@ -278,4 +284,6 @@ backend pytest
 Alembic migration upgrade
 OpenClaw plugin TypeScript build
 npm audit --audit-level=moderate
+frontend TypeScript/Vite build
+frontend npm audit --audit-level=moderate
 ```
