@@ -232,6 +232,7 @@ def answer_with_knowledge(
     project_id: str | None = None,
     customer_id: str | None = None,
     limit: int = 3,
+    actor_user_id: str | None = None,
 ) -> dict:
     matches = search_knowledge(
         db,
@@ -242,6 +243,15 @@ def answer_with_knowledge(
         limit=limit,
     )
     if not matches:
+        from app.services.support_operations_service import record_unanswered_question
+
+        record_unanswered_question(
+            db,
+            question=query,
+            user_id=actor_user_id or (user.id if user else None),
+            customer_id=customer_id,
+            project_id=project_id,
+        )
         return {
             "answer": "没有找到可用的知识库内容，请先补充文档或放宽查询条件。",
             "matches": [],

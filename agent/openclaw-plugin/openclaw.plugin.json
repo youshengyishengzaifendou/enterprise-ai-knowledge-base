@@ -20,7 +20,11 @@
       "kb_ingest_document",
       "record_enterprise_knowledge",
       "kb_search",
-      "kb_answer"
+      "kb_answer",
+      "support_dashboard",
+      "support_unanswered_questions",
+      "support_update_unanswered_status",
+      "support_import_faq"
     ]
   },
   "uiHints": {

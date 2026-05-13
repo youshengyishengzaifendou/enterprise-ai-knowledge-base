@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.industry_config import get_industry_config, serialize_industry_config
 from app.models import (
     AuditLog,
     ConfirmationAction,
@@ -18,6 +19,7 @@ from app.models import (
     ProjectEvent,
     ProjectRisk,
     ProjectTask,
+    SupportUnansweredQuestion,
     User,
     UserChannelBinding,
 )
@@ -201,17 +203,30 @@ TABLES: tuple[TableOverviewConfig, ...] = (
         ),
         order_by="created_at",
     ),
+    TableOverviewConfig(
+        id="support_unanswered_questions",
+        label="无答案问题",
+        model=SupportUnansweredQuestion,
+        columns=("id", "question", "customer_id", "project_id", "user_id", "status", "source", "created_at", "updated_at"),
+        order_by="created_at",
+    ),
 )
 
 
-def get_database_overview(db: Session, *, limit: int = 25) -> dict[str, Any]:
+def get_database_overview(db: Session, *, limit: int = 25, industry_key: str | None = None) -> dict[str, Any]:
+    industry = get_industry_config(industry_key)
     return {
         "ok": True,
-        "tables": [_build_table_overview(db, config, limit) for config in TABLES],
+        "industry": serialize_industry_config(industry),
+        "title": industry.title,
+        "description": industry.description,
+        "labels": industry.labels,
+        "tables": [_build_table_overview(db, config, limit, industry.table_labels.get(config.id)) for config in TABLES],
     }
 
 
-def get_customer_related_info(db: Session, customer_name: str, *, limit: int = 25) -> dict[str, Any]:
+def get_customer_related_info(db: Session, customer_name: str, *, limit: int = 25, industry_key: str | None = None) -> dict[str, Any]:
+    industry = get_industry_config(industry_key)
     normalized_name = customer_name.strip()
     customer = db.scalar(select(Customer).where(Customer.name == normalized_name))
     customer_id = customer.id if customer else None
@@ -242,6 +257,22 @@ def get_customer_related_info(db: Session, customer_name: str, *, limit: int = 2
         .limit(limit)
     ).all()
 
+    similar_case_conditions = [
+        Project.name.contains(normalized_name),
+        Project.aliases_json.contains(normalized_name),
+    ]
+    if customer_id:
+        similar_case_conditions.append(Project.customer_id == customer_id)
+    for document in documents:
+        if document.project_id:
+            similar_case_conditions.append(Project.id == document.project_id)
+    similar_cases = db.scalars(
+        select(Project)
+        .where(or_(*similar_case_conditions))
+        .order_by(Project.updated_at.desc())
+        .limit(limit)
+    ).all()
+
     audit_conditions = [
         AuditLog.request_payload_json.contains(normalized_name),
         AuditLog.response_summary.contains(normalized_name),
@@ -260,13 +291,16 @@ def get_customer_related_info(db: Session, customer_name: str, *, limit: int = 2
     return {
         "ok": True,
         "customer_name": normalized_name,
+        "industry": serialize_industry_config(industry),
+        "labels": industry.related_labels,
         "documents": [_with_table_id(_serialize_row(document, _table_columns("knowledge_documents")), "knowledge_documents") for document in documents],
         "chunks": [_with_table_id(_serialize_row(chunk, _table_columns("knowledge_chunks")), "knowledge_chunks") for chunk in chunks],
+        "similar_cases": [_with_table_id(_serialize_row(project, _table_columns("projects")), "projects") for project in similar_cases],
         "audit_logs": [_with_table_id(_serialize_row(log, _table_columns("audit_logs")), "audit_logs") for log in audit_logs],
     }
 
 
-def _build_table_overview(db: Session, config: TableOverviewConfig, limit: int) -> dict[str, Any]:
+def _build_table_overview(db: Session, config: TableOverviewConfig, limit: int, label_override: str | None = None) -> dict[str, Any]:
     rows = [_serialize_row(row, config.columns) for row in _recent_rows(db, config, limit)]
     count = _count_rows(db, config.model)
     columns = list(config.columns)
@@ -280,7 +314,7 @@ def _build_table_overview(db: Session, config: TableOverviewConfig, limit: int) 
 
     return {
         "id": config.id,
-        "label": config.label,
+        "label": label_override or config.label,
         "count": count,
         "columns": columns,
         "rows": rows,

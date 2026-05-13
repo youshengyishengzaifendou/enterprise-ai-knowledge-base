@@ -7,6 +7,7 @@ from app.models.project import Project
 from app.models.project_event import ProjectEvent
 from app.models.project_risk import ProjectRisk
 from app.models.project_task import ProjectTask
+from app.models.support_unanswered_question import SupportUnansweredQuestion
 from app.models.user import User, UserChannelBinding
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "ProjectEvent",
     "ProjectRisk",
     "ProjectTask",
+    "SupportUnansweredQuestion",
     "User",
     "UserChannelBinding",
 ]

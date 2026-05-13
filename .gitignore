@@ -28,7 +28,3 @@ docs/
 memory/
 agent/openclaw-plugin/README.md
 agent/openclaw-plugin/skills/
-
-# Local tests are not published in the public repository.
-backend/tests/
-agent/openclaw-plugin/test/

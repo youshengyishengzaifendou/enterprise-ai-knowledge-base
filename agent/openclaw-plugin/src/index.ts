@@ -76,6 +76,8 @@ type OpenClawPluginApi = {
 
 const PLUGIN_ID = "enterprise-ai-assistant";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
+const SUPPORT_TOOL_CONTEXT =
+  "客服坐席内部知识助手：用于记录客服知识、查询标准答案、生成建议回复、查看历史相似问题；不直接自动回复终端客户。";
 
 function readStringConfig(config: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = config?.[key];
@@ -136,11 +138,11 @@ const schemas = {
     additionalProperties: false,
     properties: {
       title: { type: "string", description: "Knowledge document title." },
-      content_text: { type: "string", description: "Full document body to ingest into the enterprise knowledge base." },
-      project_id: { type: "string", description: "Optional project id scope. Use project-demo for seeded Hengrun test data." },
-      customer_id: { type: "string", description: "Optional customer id scope." },
-      summary: { type: "string", description: "Optional short document summary." },
-      source_type: { type: "string", description: "Source type, for example manual, feishu, meeting, or import." },
+      content_text: { type: "string", description: "Full客服知识文章正文，后端会切分成答案片段。" },
+      project_id: { type: "string", description: "Optional issue/ticket/session topic id scope." },
+      customer_id: { type: "string", description: "Optional customer/user/account id scope." },
+      summary: { type: "string", description: "Optional short support knowledge summary." },
+      source_type: { type: "string", description: "Source type, for example manual, faq, ticket, chat, feishu, meeting, or import." },
       source_url: { type: "string", description: "Optional source URL." },
       confirmed: { type: "boolean", description: "Set true when the user explicitly asks to record, save, write, load, import, or ingest the provided content." },
     },
@@ -150,9 +152,9 @@ const schemas = {
     type: "object",
     additionalProperties: false,
     properties: {
-      query: { type: "string", description: "Knowledge base search query. Use exact user words for business/project facts, deadlines, documents, and requirements." },
-      project_id: { type: "string", description: "Optional project id scope. Use project-demo for the seeded Hengrun project." },
-      customer_id: { type: "string", description: "Optional customer id scope." },
+      query: { type: "string", description: "Knowledge base search query. Use exact customer question words for policies, standard answers, troubleshooting steps, and similar issues." },
+      project_id: { type: "string", description: "Optional issue/ticket/session topic id scope." },
+      customer_id: { type: "string", description: "Optional customer/user/account id scope." },
       limit: { type: "number", description: "Maximum number of chunks to return." },
     },
     required: ["query"],
@@ -161,12 +163,40 @@ const schemas = {
     type: "object",
     additionalProperties: false,
     properties: {
-      query: { type: "string", description: "Exact user question to answer from the enterprise knowledge base, for example: 帮我查看一下商品主数据什么时候提交." },
-      project_id: { type: "string", description: "Optional project id scope. If the user did not specify one, omit this field so backend defaults can resolve scope. Use project-demo only when explicitly testing the seeded Hengrun project." },
-      customer_id: { type: "string", description: "Optional customer id scope." },
+      query: { type: "string", description: "Exact customer-service question to answer from the knowledge base, for example: 客户登录失败怎么回复, 退款政策是什么, 有没有历史相似问题." },
+      project_id: { type: "string", description: "Optional issue/ticket/session topic id scope. Omit when the user did not specify one." },
+      customer_id: { type: "string", description: "Optional customer/user/account id scope." },
       limit: { type: "number", description: "Maximum number of chunks to use." },
     },
     required: ["query"],
+  },
+  support_unanswered_questions: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      limit: { type: "number", description: "Maximum number of unanswered support questions to return." },
+      status: { type: "string", description: "Optional status filter: pending, resolved, or ignored." },
+    },
+  },
+  support_update_unanswered_status: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      unanswered_id: { type: "string", description: "Unanswered question id." },
+      status: { type: "string", description: "New status: pending, resolved, or ignored." },
+    },
+    required: ["unanswered_id", "status"],
+  },
+  support_import_faq: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      text: { type: "string", description: "CSV or text FAQ content. CSV format should include 问题,答案 columns." },
+      source_type: { type: "string", description: "Source type, for example faq_csv, markdown, txt, or support_import." },
+      customer_id: { type: "string", description: "Optional customer/user/account id scope." },
+      project_id: { type: "string", description: "Optional issue/ticket/session topic id scope." },
+    },
+    required: ["text"],
   },
 } as const;
 
@@ -178,34 +208,58 @@ type ToolDefinition = {
 };
 
 const toolDefinitions: ToolDefinition[] = [
-  { name: "customer_search", description: "Search accessible customers by name or alias.", optional: false, parameters: schemas.customer_search },
-  { name: "project_search", description: "Search accessible projects by name, alias, or customer.", optional: false, parameters: schemas.project_search },
-  { name: "project_extract_update", description: "Extract a project update draft from natural language.", optional: false, parameters: genericInputSchema },
-  { name: "project_add_update", description: "Add a confirmed project update.", optional: true, parameters: genericInputSchema },
-  { name: "task_create", description: "Create a confirmed project task.", optional: true, parameters: genericInputSchema },
-  { name: "project_get_brief", description: "Get project stage, recent updates, open tasks, risks, and citations.", optional: false, parameters: schemas.project_get_brief },
+  { name: "customer_search", description: `${SUPPORT_TOOL_CONTEXT} Search accessible customers/users/accounts by name or alias.`, optional: false, parameters: schemas.customer_search },
+  { name: "project_search", description: `${SUPPORT_TOOL_CONTEXT} Search accessible issues, tickets, or session topics by name, alias, or customer.`, optional: false, parameters: schemas.project_search },
+  { name: "project_extract_update", description: `${SUPPORT_TOOL_CONTEXT} Extract a draft handling note from natural language.`, optional: false, parameters: genericInputSchema },
+  { name: "project_add_update", description: `${SUPPORT_TOOL_CONTEXT} Add a confirmed issue/ticket handling note.`, optional: true, parameters: genericInputSchema },
+  { name: "task_create", description: `${SUPPORT_TOOL_CONTEXT} Create a confirmed follow-up task for a support issue.`, optional: true, parameters: genericInputSchema },
+  { name: "project_get_brief", description: `${SUPPORT_TOOL_CONTEXT} Get issue status, recent handling notes, open tasks, escalation risks, and citations.`, optional: false, parameters: schemas.project_get_brief },
   { name: "confirm_action", description: "Confirm and execute a pending write action.", optional: true, parameters: genericInputSchema },
   {
     name: "kb_ingest_document",
     description:
-      "Ingest or write a user-provided document into the enterprise knowledge base. Use when the user explicitly asks to record, remember, note, load, import, write, save, or ingest project/customer knowledge, including short requests like '记录上述内容'. For multiple documents, call once per document. Set confirmed=true when the user has already explicitly instructed the write. If Hengrun/恒润 project data has no project_id, use project-demo.",
+      `${SUPPORT_TOOL_CONTEXT} Ingest or write a user-provided support knowledge article into the knowledge base. Use when the user explicitly asks to record, remember, note, load, import, write, save, or ingest customer-service knowledge, FAQ, policy, ticket handling steps, or standard reply content. For multiple documents, call once per document. Set confirmed=true when the user has already explicitly instructed the write.`,
     optional: false,
     parameters: schemas.kb_ingest_document,
   },
   {
     name: "record_enterprise_knowledge",
     description:
-      "Record enterprise knowledge into the database. Use this for natural-language requests like '记录上述内容', '记一下', '保存这些资料', or when the user pastes project/customer documents and asks to record them. This is an alias of kb_ingest_document: for multiple documents, call once per document. If Hengrun/恒润 project data has no project_id, use project-demo. Do not write workspace files for this intent.",
+      `${SUPPORT_TOOL_CONTEXT} Record customer-service knowledge into the database. Use this for natural-language requests like '记录上述内容', '记一下', '保存这些资料', or when the user pastes FAQ, policy, customer/account notes, or issue handling content and asks to record it. This is an alias of kb_ingest_document: for multiple documents, call once per document. Do not write workspace files for this intent.`,
     optional: false,
     parameters: schemas.kb_ingest_document,
   },
-  { name: "kb_search", description: "Search enterprise knowledge base content for project facts, customer documents, requirements, plans, and deadlines.", optional: false, parameters: schemas.kb_search },
+  { name: "kb_search", description: `${SUPPORT_TOOL_CONTEXT} Search support knowledge articles and answer fragments for standard answers, policies, troubleshooting steps, and similar issues.`, optional: false, parameters: schemas.kb_search },
   {
     name: "kb_answer",
     description:
-      "Use first for enterprise knowledge-base questions and short business fact questions, including latest/recent/current status questions such as 最新、最近、动态、情况、变化、进展, and deadlines such as '帮我查看一下商品主数据什么时候提交', '商品主数据什么时候提交', '模板几号提交', or '恒润项目知识库'. Answer from data.answer as one concise sentence; include citations only when the user asks for sources.",
+      `${SUPPORT_TOOL_CONTEXT} Use first for客服问题、标准答案、建议回复、历史相似问题查询 and short knowledge-base questions, including latest/recent/current handling status questions such as 最新、最近、动态、情况、变化、进展. Answer from data.answer as a concise support-agent draft; include citations only when the user asks for sources.`,
     optional: false,
     parameters: schemas.kb_answer,
+  },
+  {
+    name: "support_dashboard",
+    description: `${SUPPORT_TOOL_CONTEXT} Show support knowledge operations metrics: knowledge count, answer fragments, hit rate, popular questions, unanswered questions, and recent writes.`,
+    optional: false,
+    parameters: genericInputSchema,
+  },
+  {
+    name: "support_unanswered_questions",
+    description: `${SUPPORT_TOOL_CONTEXT} List unanswered customer questions captured from missed knowledge-base answers so the support manager can fill knowledge gaps.`,
+    optional: false,
+    parameters: schemas.support_unanswered_questions,
+  },
+  {
+    name: "support_update_unanswered_status",
+    description: `${SUPPORT_TOOL_CONTEXT} Mark an unanswered support question as pending, resolved, or ignored after the knowledge gap has been handled.`,
+    optional: false,
+    parameters: schemas.support_update_unanswered_status,
+  },
+  {
+    name: "support_import_faq",
+    description: `${SUPPORT_TOOL_CONTEXT} Import customer-service FAQ content into the support knowledge base from CSV/text, creating searchable knowledge articles and answer fragments.`,
+    optional: false,
+    parameters: schemas.support_import_faq,
   },
 ];
 

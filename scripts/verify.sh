@@ -13,7 +13,7 @@ DATABASE_URL="sqlite:///$TMP_DB" .venv/bin/alembic upgrade head
 
 cd "$ROOT_DIR/agent/openclaw-plugin"
 npm run build
-if [ -d test ]; then
+if find test -maxdepth 1 -name '*.test.mjs' -print -quit 2>/dev/null | grep -q .; then
   npm test
 fi
 npm audit --audit-level=moderate

@@ -19,6 +19,7 @@ from app.services.project_service import (
     search_projects,
 )
 from app.services.permission_service import can_access_project
+from app.services.support_operations_service import get_support_operations_dashboard, import_faq_text, list_unanswered_questions, update_unanswered_question_status
 
 router = APIRouter(prefix="/api/agent-tools", tags=["agent-tools"], dependencies=[Depends(require_agent_tool_api_key)])
 
@@ -352,6 +353,7 @@ def kb_answer(request: AgentToolRequest, db: Session = Depends(get_db)) -> Agent
         project_id=request.input.get("project_id"),
         customer_id=request.input.get("customer_id"),
         limit=int(request.input.get("limit", 3)),
+        actor_user_id=user.id if user else None,
     )
     response = AgentToolResponse(
         ok=True,
@@ -360,3 +362,55 @@ def kb_answer(request: AgentToolRequest, db: Session = Depends(get_db)) -> Agent
         message="已根据知识库生成回答。",
     )
     return _with_audit(db, request, response, user.id if user else None, "kb_answer", "query")
+
+
+@router.post("/support_dashboard", response_model=AgentToolResponse)
+def support_dashboard(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    dashboard = get_support_operations_dashboard(db)
+    response = AgentToolResponse(ok=True, data=dashboard, message="已生成客服知识运营看板。")
+    return _with_audit(db, request, response, user.id if user else None, "support_dashboard", "query")
+
+
+@router.post("/support_unanswered_questions", response_model=AgentToolResponse)
+def support_unanswered_questions(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    limit = int(request.input.get("limit", 25))
+    status = str(request.input["status"]) if request.input.get("status") else None
+    response = AgentToolResponse(
+        ok=True,
+        data={"items": list_unanswered_questions(db, limit=limit, status=status)},
+        message="已查询无答案问题列表。",
+    )
+    return _with_audit(db, request, response, user.id if user else None, "support_unanswered_questions", "query")
+
+
+@router.post("/support_update_unanswered_status", response_model=AgentToolResponse)
+def support_update_unanswered_status(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    try:
+        item = update_unanswered_question_status(db, str(request.input["unanswered_id"]), status=str(request.input["status"]))
+    except ValueError as error:
+        response = AgentToolResponse(ok=False, error_code="INVALID_UNANSWERED_STATUS", message=str(error))
+        return _with_audit(db, request, response, user.id if user else None, "support_update_unanswered_status", "error")
+
+    response = AgentToolResponse(ok=True, data={"item": item}, message="已更新无答案问题状态。")
+    return _with_audit(db, request, response, user.id if user else None, "support_update_unanswered_status", "write")
+
+
+@router.post("/support_import_faq", response_model=AgentToolResponse)
+def support_import_faq(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "support_import_faq", "denied")
+
+    result = import_faq_text(
+        db,
+        text=str(request.input.get("text", "")),
+        user_id=user.id,
+        source_type=str(request.input.get("source_type") or "faq_import"),
+        customer_id=request.input.get("customer_id"),
+        project_id=request.input.get("project_id"),
+    )
+    response = AgentToolResponse(ok=True, data=result, message=f"已导入 {result['imported_count']} 条客服 FAQ。")
+    return _with_audit(db, request, response, user.id, "support_import_faq", "write")
