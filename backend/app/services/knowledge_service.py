@@ -2,7 +2,7 @@ from collections.abc import Iterable
 from datetime import timedelta
 import re
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Customer, KnowledgeChunk, KnowledgeDocument, Project, User
@@ -84,6 +84,11 @@ def ingest_document(db: Session, *, payload: dict, user_id: str) -> KnowledgeDoc
         title=str(payload["title"]).strip(),
         source_type=str(payload.get("source_type") or "manual"),
         source_url=payload.get("source_url"),
+        source_file_path=payload.get("source_file_path"),
+        source_file_name=payload.get("source_file_name"),
+        source_file_mime_type=payload.get("source_file_mime_type"),
+        source_file_size=int(payload["source_file_size"]) if payload.get("source_file_size") not in (None, "") else None,
+        source_file_storage=payload.get("source_file_storage"),
         customer_id=payload.get("customer_id"),
         project_id=payload.get("project_id"),
         summary=payload.get("summary"),
@@ -105,6 +110,56 @@ def ingest_document(db: Session, *, payload: dict, user_id: str) -> KnowledgeDoc
     db.commit()
     db.refresh(document)
     return document
+
+
+def find_source_files(
+    db: Session,
+    *,
+    query: str,
+    project_id: str | None = None,
+    customer_id: str | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    normalized_query = query.strip()
+    conditions = [KnowledgeDocument.source_file_path.is_not(None)]
+    if normalized_query:
+        like_query = f"%{normalized_query}%"
+        conditions.append(
+            or_(
+                KnowledgeDocument.title.like(like_query),
+                KnowledgeDocument.summary.like(like_query),
+                KnowledgeDocument.source_file_name.like(like_query),
+                KnowledgeDocument.source_file_path.like(like_query),
+            )
+        )
+    if project_id:
+        conditions.append(KnowledgeDocument.project_id == project_id)
+    if customer_id:
+        conditions.append(KnowledgeDocument.customer_id == customer_id)
+
+    documents = db.scalars(
+        select(KnowledgeDocument)
+        .where(*conditions)
+        .order_by(KnowledgeDocument.updated_at.desc())
+        .limit(limit)
+    ).all()
+    return [
+        {
+            "document_id": document.id,
+            "document_title": document.title,
+            "project_id": document.project_id,
+            "customer_id": document.customer_id,
+            "source_type": document.source_type,
+            "source_url": document.source_url,
+            "source_file_path": document.source_file_path,
+            "source_file_name": document.source_file_name,
+            "source_file_mime_type": document.source_file_mime_type,
+            "source_file_size": document.source_file_size,
+            "source_file_storage": document.source_file_storage,
+            "updated_at": document.updated_at,
+        }
+        for document in documents
+    ]
 
 
 def _score_chunk(query: str, text: str, title: str) -> int:
@@ -284,6 +339,8 @@ def answer_with_knowledge(
                 "snippet": row["chunk"].content_text,
                 "score": row["score"],
                 "source_url": row["document"].source_url,
+                "source_file_name": row["document"].source_file_name,
+                "source_file_path": row["document"].source_file_path,
             }
             for row in matches
         ],

@@ -264,9 +264,54 @@ select {
   white-space: nowrap;
 }
 
+.file-input {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid #cdd6df;
+  border-radius: 6px;
+  background: white;
+  color: #1f4f8f;
+  font-weight: 650;
+  overflow: hidden;
+}
+
+.file-input input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.file-input:has(input:disabled) {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 .import-section .secondary-button {
   width: fit-content;
   margin-bottom: 0;
+}
+
+.format-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.format-tags span {
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid #d7dee7;
+  border-radius: 999px;
+  background: #f7f9fb;
+  color: #4f5b66;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .success-text {
@@ -476,6 +521,38 @@ select {
 .secondary-button:disabled {
   opacity: 0.65;
   cursor: wait;
+}
+
+.compact-button {
+  margin-bottom: 0;
+}
+
+.source-file-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #d6e3f2;
+  border-radius: 6px;
+  background: #f5f9ff;
+}
+
+.source-file-panel div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.source-file-panel strong,
+.source-file-panel span {
+  overflow-wrap: anywhere;
+}
+
+.source-file-panel span {
+  color: #68737d;
+  font-size: 13px;
 }
 
 .related-panel {

@@ -10,7 +10,7 @@ from app.services.audit_service import write_audit_log
 from app.services.confirmation_service import create_confirmation, get_pending_confirmation, mark_completed
 from app.services.extraction_service import extract_project_update
 from app.services.identity_service import resolve_actor
-from app.services.knowledge_service import answer_with_knowledge, can_access_document, ingest_document, search_knowledge
+from app.services.knowledge_service import answer_with_knowledge, can_access_document, find_source_files, ingest_document, search_knowledge
 from app.services.project_service import (
     create_project_event,
     create_project_task,
@@ -340,6 +340,28 @@ def kb_search(request: AgentToolRequest, db: Session = Depends(get_db)) -> Agent
         message=f"找到 {len(matches)} 条知识库片段。",
     )
     return _with_audit(db, request, response, user.id if user else None, "kb_search", "query")
+
+
+@router.post("/kb_find_source_file", response_model=AgentToolResponse)
+def kb_find_source_file(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    files = find_source_files(
+        db,
+        query=str(request.input.get("query", "")).strip(),
+        project_id=request.input.get("project_id"),
+        customer_id=request.input.get("customer_id"),
+        limit=int(request.input.get("limit", 5)),
+    )
+    response = AgentToolResponse(
+        ok=True,
+        data={"files": files},
+        citations=[
+            {"type": "knowledge_document", "id": item["document_id"], "title": item["document_title"], "updated_at": item["updated_at"]}
+            for item in files
+        ],
+        message=f"找到 {len(files)} 个知识库原件。",
+    )
+    return _with_audit(db, request, response, user.id if user else None, "kb_find_source_file", "query")
 
 
 @router.post("/kb_answer", response_model=AgentToolResponse)

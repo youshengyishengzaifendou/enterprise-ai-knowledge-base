@@ -1,4 +1,4 @@
-import { AlertCircle, BarChart3, Database, FileText, KeyRound, Link2, RefreshCw, Search, Server, Table2, Upload } from "lucide-react";
+import { AlertCircle, BarChart3, Copy, Database, FileText, KeyRound, Link2, RefreshCw, Search, Server, Table2, Upload } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -70,6 +70,7 @@ function App() {
   const [faqSourceType, setFaqSourceType] = useState("faq_csv");
   const [importingFaq, setImportingFaq] = useState(false);
   const [importMessage, setImportMessage] = useState("");
+  const [loadingFaqFile, setLoadingFaqFile] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -141,6 +142,54 @@ function App() {
     }
   }
 
+  async function loadFaqFile(file: File | null) {
+    if (!file) return;
+    setLoadingFaqFile(true);
+    setImportMessage("");
+    setError("");
+    try {
+      const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+      if (!["csv", "txt", "md", "markdown", "pdf", "docx", "xlsx"].includes(extension)) {
+        throw new Error("当前支持 CSV、TXT、Markdown、PDF、Word(docx)、Excel(xlsx) 文档。");
+      }
+      if (["pdf", "docx", "xlsx"].includes(extension)) {
+        await importKnowledgeFile(file, extension);
+        return;
+      }
+      const text = await file.text();
+      setFaqText(text);
+      if (extension === "csv") {
+        setFaqSourceType("faq_csv");
+      } else if (extension === "md" || extension === "markdown") {
+        setFaqSourceType("markdown");
+      } else {
+        setFaqSourceType("txt");
+      }
+      setImportMessage(`已加载 ${file.name}，确认内容后点击导入 FAQ`);
+    } catch (fileError) {
+      setError(fileError instanceof Error ? fileError.message : "加载 FAQ 文档失败");
+    } finally {
+      setLoadingFaqFile(false);
+    }
+  }
+
+  async function importKnowledgeFile(file: File, extension: string) {
+    const headers: HeadersInit = {};
+    if (apiKey.trim()) {
+      headers.Authorization = `Bearer ${apiKey.trim()}`;
+    }
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("source_type", extension);
+    formData.append("user_id", "user-demo");
+    const response = await fetchImportFileWithFallback(backendUrl, headers, formData);
+    const body = (await response.json()) as { imported_count?: number; documents?: Array<{ title?: string }> };
+    const title = body.documents?.[0]?.title;
+    setImportMessage(`已导入 ${body.imported_count ?? 0} 个文档${title ? `：${title}` : ""}`);
+    setFaqText("");
+    await loadOverview();
+  }
+
   async function updateUnansweredStatus(unansweredId: JsonValue, status: "resolved" | "ignored") {
     if (typeof unansweredId !== "string") return;
     setError("");
@@ -173,6 +222,11 @@ function App() {
     } finally {
       setRelatedLoading(false);
     }
+  }
+
+  async function copyText(value: JsonValue) {
+    if (typeof value !== "string" || !value.trim()) return;
+    await navigator.clipboard.writeText(value);
   }
 
   function jumpToRecord(tableId: string, recordId: JsonValue) {
@@ -241,8 +295,10 @@ function App() {
           faqSourceType={faqSourceType}
           importMessage={importMessage}
           importingFaq={importingFaq}
+          loadingFaqFile={loadingFaqFile}
           onFaqTextChange={setFaqText}
           onFaqSourceTypeChange={setFaqSourceType}
+          onFaqFileChange={(file) => void loadFaqFile(file)}
           onImportFaq={() => void importFaq()}
           onUpdateUnansweredStatus={(id, status) => void updateUnansweredStatus(id, status)}
         />
@@ -362,6 +418,9 @@ function App() {
                       <span>{relatedLoading ? "加载中" : `查看${data?.labels?.customer ?? "客户"}相关信息`}</span>
                     </button>
                   ) : null}
+                  {activeTable?.id === "knowledge_documents" && selectedRow.source_file_path ? (
+                    <SourceFileActions row={selectedRow} onCopy={(value) => void copyText(value)} />
+                  ) : null}
                   {relatedError ? <div className="error-banner compact">{relatedError}</div> : null}
                 <dl>
                   {Object.entries(selectedRow).map(([key, value]) => (
@@ -383,14 +442,31 @@ function App() {
   );
 }
 
+function SourceFileActions({ row, onCopy }: { row: Record<string, JsonValue>; onCopy: (value: JsonValue) => void }) {
+  return (
+    <div className="source-file-panel">
+      <div>
+        <strong>{formatValue(row.source_file_name ?? "原始文件")}</strong>
+        <span>{formatValue(row.source_file_storage ?? "未标注存储")}</span>
+      </div>
+      <button className="secondary-button compact-button" onClick={() => onCopy(row.source_file_path)} title="复制原件路径">
+        <Copy size={16} />
+        <span>复制路径</span>
+      </button>
+    </div>
+  );
+}
+
 function SupportOperationsPanel({
   dashboard,
   faqText,
   faqSourceType,
   importMessage,
   importingFaq,
+  loadingFaqFile,
   onFaqTextChange,
   onFaqSourceTypeChange,
+  onFaqFileChange,
   onImportFaq,
   onUpdateUnansweredStatus,
 }: {
@@ -399,8 +475,10 @@ function SupportOperationsPanel({
   faqSourceType: string;
   importMessage: string;
   importingFaq: boolean;
+  loadingFaqFile: boolean;
   onFaqTextChange: (value: string) => void;
   onFaqSourceTypeChange: (value: string) => void;
+  onFaqFileChange: (file: File | null) => void;
   onImportFaq: () => void;
   onUpdateUnansweredStatus: (id: JsonValue, status: "resolved" | "ignored") => void;
 }) {
@@ -457,15 +535,36 @@ function SupportOperationsPanel({
         <section className="ops-section import-section">
           <h2>
             <Upload size={16} />
-            导入客服 FAQ
+            导入知识文档
           </h2>
+          <div className="format-tags" aria-label="支持的导入格式">
+            <span>CSV</span>
+            <span>TXT</span>
+            <span>Markdown</span>
+            <span>PDF</span>
+            <span>Word</span>
+            <span>Excel</span>
+          </div>
           <label className="inline-select">
-            <span>格式</span>
+            <span>文本格式</span>
             <select value={faqSourceType} onChange={(event) => onFaqSourceTypeChange(event.target.value)}>
               <option value="faq_csv">CSV FAQ</option>
               <option value="markdown">Markdown</option>
               <option value="txt">TXT</option>
             </select>
+          </label>
+          <label className="file-input">
+            <Upload size={16} />
+            <span>{loadingFaqFile ? "加载中" : "选择知识文档"}</span>
+            <input
+              type="file"
+              accept=".csv,.txt,.md,.markdown,.pdf,.docx,.xlsx,text/csv,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              disabled={loadingFaqFile || importingFaq}
+              onChange={(event) => {
+                onFaqFileChange(event.target.files?.[0] ?? null);
+                event.currentTarget.value = "";
+              }}
+            />
           </label>
           <textarea
             value={faqText}
@@ -474,7 +573,7 @@ function SupportOperationsPanel({
           />
           <button className="secondary-button" onClick={onImportFaq} disabled={importingFaq || !faqText.trim()}>
             <Upload size={16} />
-            <span>{importingFaq ? "导入中" : "导入 FAQ"}</span>
+            <span>{importingFaq ? "导入中" : "导入文本内容"}</span>
           </button>
           {importMessage ? <p className="success-text">{importMessage}</p> : null}
         </section>
@@ -671,6 +770,28 @@ async function fetchImportFaqWithFallback(backendUrl: string, headers: HeadersIn
         method: "POST",
         headers,
         body: JSON.stringify({ text, source_type: sourceType }),
+      });
+      if (response.ok) return response;
+      const detail = await readError(response);
+      lastError = `${candidate}: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`;
+    } catch (error) {
+      lastError = `${candidate}: ${error instanceof Error ? error.message : "请求失败"}`;
+    }
+  }
+
+  throw new Error(lastError || "无法连接后端");
+}
+
+async function fetchImportFileWithFallback(backendUrl: string, headers: HeadersInit, formData: FormData): Promise<Response> {
+  const candidates = [backendUrl, ...localBackendFallbacks].filter((url, index, urls) => urls.indexOf(url) === index);
+  let lastError = "";
+
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(`${candidate.replace(/\/$/, "")}/api/database/support/import-file`, {
+        method: "POST",
+        headers,
+        body: formData,
       });
       if (response.ok) return response;
       const detail = await readError(response);

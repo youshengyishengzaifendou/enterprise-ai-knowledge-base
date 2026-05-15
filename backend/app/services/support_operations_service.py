@@ -1,6 +1,9 @@
 from collections import Counter
 import csv
-from io import StringIO
+from io import BytesIO, StringIO
+from pathlib import Path
+import re
+import uuid
 from typing import Any
 
 from sqlalchemy import func, select
@@ -8,6 +11,10 @@ from sqlalchemy.orm import Session
 
 from app.models import AuditLog, KnowledgeChunk, KnowledgeDocument, SupportUnansweredQuestion
 from app.services.knowledge_service import ingest_document
+
+
+UPLOAD_ROOT = Path("uploads/knowledge_sources")
+SUPPORTED_KNOWLEDGE_FILE_EXTENSIONS = {".csv", ".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx"}
 
 
 def record_unanswered_question(
@@ -123,6 +130,55 @@ def import_faq_text(
     }
 
 
+def import_knowledge_file(
+    db: Session,
+    *,
+    filename: str,
+    content: bytes,
+    user_id: str,
+    source_type: str | None = None,
+    customer_id: str | None = None,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    safe_filename = _safe_filename(filename)
+    extension = Path(safe_filename).suffix.lower()
+    if extension not in SUPPORTED_KNOWLEDGE_FILE_EXTENSIONS:
+        raise ValueError("unsupported file type; supported: csv, txt, md, markdown, pdf, docx, xlsx")
+    if not content:
+        raise ValueError("file is empty")
+
+    stored_path = _store_uploaded_file(safe_filename, content)
+    parsed_text = _extract_file_text(extension, content)
+    title = _derive_document_title(safe_filename, parsed_text)
+    document = ingest_document(
+        db,
+        payload={
+            "title": title,
+            "summary": _build_summary(parsed_text),
+            "content_text": parsed_text,
+            "source_type": source_type or extension.lstrip(".") or "file_import",
+            "source_file_path": str(stored_path),
+            "source_file_name": safe_filename,
+            "source_file_mime_type": _mime_type_for_extension(extension),
+            "source_file_size": len(content),
+            "source_file_storage": "uploaded_copy",
+            "customer_id": customer_id,
+            "project_id": project_id,
+        },
+        user_id=user_id,
+    )
+    return {
+        "ok": True,
+        "imported_count": 1,
+        "documents": [{"id": document.id, "title": document.title}],
+        "source_file": {
+            "name": document.source_file_name,
+            "path": document.source_file_path,
+            "storage": document.source_file_storage,
+        },
+    }
+
+
 def _parse_faq_rows(text: str) -> list[tuple[str, str]]:
     stripped = text.strip()
     if not stripped:
@@ -164,6 +220,94 @@ def _parse_faq_rows(text: str) -> list[tuple[str, str]]:
         return [(plain_lines[0], "\n".join(plain_lines[1:]))]
 
     return []
+
+
+def _safe_filename(filename: str) -> str:
+    name = Path(filename).name.strip()
+    if not name:
+        return "uploaded-document"
+    return re.sub(r"[\\/:*?\"<>|]+", "_", name)
+
+
+def _store_uploaded_file(filename: str, content: bytes) -> Path:
+    UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+    stored_path = UPLOAD_ROOT / f"{Path(filename).stem}---{uuid.uuid4()}{Path(filename).suffix}"
+    stored_path.write_bytes(content)
+    return stored_path
+
+
+def _extract_file_text(extension: str, content: bytes) -> str:
+    if extension in {".txt", ".md", ".markdown", ".csv"}:
+        return content.decode("utf-8-sig")
+    if extension == ".docx":
+        return _extract_docx_text(content)
+    if extension == ".xlsx":
+        return _extract_xlsx_text(content)
+    if extension == ".pdf":
+        return _extract_pdf_text(content)
+    raise ValueError("unsupported file type")
+
+
+def _extract_docx_text(content: bytes) -> str:
+    from docx import Document
+
+    document = Document(BytesIO(content))
+    text = "\n".join(paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip())
+    if not text.strip():
+        raise ValueError("no readable text found in Word document")
+    return text
+
+
+def _extract_xlsx_text(content: bytes) -> str:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    sections: list[str] = []
+    for sheet in workbook.worksheets:
+        rows: list[str] = []
+        for row in sheet.iter_rows(values_only=True):
+            values = [str(value).strip() for value in row if value not in (None, "")]
+            if values:
+                rows.append("\t".join(values))
+        if rows:
+            sections.append(f"### {sheet.title}\n" + "\n".join(rows))
+    text = "\n\n".join(sections).strip()
+    if not text:
+        raise ValueError("no readable text found in Excel document")
+    return text
+
+
+def _extract_pdf_text(content: bytes) -> str:
+    from pypdf import PdfReader
+
+    reader = PdfReader(BytesIO(content))
+    pages = [(page.extract_text() or "").strip() for page in reader.pages]
+    text = "\n\n".join(page for page in pages if page).strip()
+    if not text:
+        raise ValueError("no readable text found in PDF document")
+    return text
+
+
+def _derive_document_title(filename: str, text: str) -> str:
+    first_line = next((line.strip().lstrip("#").strip() for line in text.splitlines() if line.strip()), "")
+    return first_line[:120] if first_line else Path(filename).stem
+
+
+def _build_summary(text: str) -> str:
+    compact = " ".join(line.strip() for line in text.splitlines() if line.strip())
+    return compact[:160]
+
+
+def _mime_type_for_extension(extension: str) -> str:
+    return {
+        ".csv": "text/csv",
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+        ".markdown": "text/markdown",
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }.get(extension, "application/octet-stream")
 
 
 def _count_kb_answer_logs(db: Session) -> int:

@@ -144,6 +144,11 @@ const schemas = {
       summary: { type: "string", description: "Optional short support knowledge summary." },
       source_type: { type: "string", description: "Source type, for example manual, faq, ticket, chat, feishu, meeting, or import." },
       source_url: { type: "string", description: "Optional source URL." },
+      source_file_path: { type: "string", description: "Optional local original file path, for example /root/.openclaw/media/inbound/file.docx." },
+      source_file_name: { type: "string", description: "Optional original file name." },
+      source_file_mime_type: { type: "string", description: "Optional original file MIME type." },
+      source_file_size: { type: "number", description: "Optional original file size in bytes." },
+      source_file_storage: { type: "string", description: "Optional source file storage kind: openclaw_media, uploaded_copy, or external_url." },
       confirmed: { type: "boolean", description: "Set true when the user explicitly asks to record, save, write, load, import, or ingest the provided content." },
     },
     required: ["title", "content_text"],
@@ -167,6 +172,17 @@ const schemas = {
       project_id: { type: "string", description: "Optional issue/ticket/session topic id scope. Omit when the user did not specify one." },
       customer_id: { type: "string", description: "Optional customer/user/account id scope." },
       limit: { type: "number", description: "Maximum number of chunks to use." },
+    },
+    required: ["query"],
+  },
+  kb_find_source_file: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      query: { type: "string", description: "File name, knowledge title, or user question used to find the original source file." },
+      project_id: { type: "string", description: "Optional issue/ticket/session topic id scope." },
+      customer_id: { type: "string", description: "Optional customer/user/account id scope." },
+      limit: { type: "number", description: "Maximum number of source files to return." },
     },
     required: ["query"],
   },
@@ -236,6 +252,13 @@ const toolDefinitions: ToolDefinition[] = [
       `${SUPPORT_TOOL_CONTEXT} Use first for客服问题、标准答案、建议回复、历史相似问题查询 and short knowledge-base questions, including latest/recent/current handling status questions such as 最新、最近、动态、情况、变化、进展. Answer from data.answer as a concise support-agent draft; include citations only when the user asks for sources.`,
     optional: false,
     parameters: schemas.kb_answer,
+  },
+  {
+    name: "kb_find_source_file",
+    description:
+      `${SUPPORT_TOOL_CONTEXT} Find the original source file linked to a knowledge article when the user asks for 原文档、原件、附件、文件、源文件, or wants a file sent back. Return source_file_path/source_file_name so the channel can send or expose the original file.`,
+    optional: false,
+    parameters: schemas.kb_find_source_file,
   },
   {
     name: "support_dashboard",

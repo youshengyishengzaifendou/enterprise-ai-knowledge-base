@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_agent_tool_api_key
 from app.db.session import get_db
 from app.services.database_overview_service import get_customer_related_info, get_database_overview
-from app.services.support_operations_service import get_support_operations_dashboard, import_faq_text, update_unanswered_question_status
+from app.services.support_operations_service import get_support_operations_dashboard, import_faq_text, import_knowledge_file, update_unanswered_question_status
 
 router = APIRouter(prefix="/api/database", tags=["database"], dependencies=[Depends(require_agent_tool_api_key)])
 
@@ -38,6 +38,29 @@ def support_import_faq(payload: dict[str, object], db: Session = Depends(get_db)
         customer_id=str(payload["customer_id"]) if payload.get("customer_id") else None,
         project_id=str(payload["project_id"]) if payload.get("project_id") else None,
     )
+
+
+@router.post("/support/import-file")
+async def support_import_file(
+    file: UploadFile = File(...),
+    user_id: str = Form(default="user-demo"),
+    source_type: str | None = Form(default=None),
+    customer_id: str | None = Form(default=None),
+    project_id: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        return import_knowledge_file(
+            db,
+            filename=file.filename or "uploaded-document",
+            content=await file.read(),
+            user_id=user_id,
+            source_type=source_type,
+            customer_id=customer_id or None,
+            project_id=project_id or None,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
 @router.post("/support/unanswered/{unanswered_id}/status")

@@ -21,6 +21,7 @@
       "record_enterprise_knowledge",
       "kb_search",
       "kb_answer",
+      "kb_find_source_file",
       "support_dashboard",
       "support_unanswered_questions",
       "support_update_unanswered_status",
