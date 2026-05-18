@@ -9,11 +9,21 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U enterprise_ai -d enterprise_ai_assistant"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   backend:
     build:
@@ -22,11 +32,31 @@ services:
       APP_ENV: local
       DATABASE_URL: postgresql+psycopg://enterprise_ai:enterprise_ai@postgres:5432/enterprise_ai_assistant
       AGENT_TOOL_API_KEY: ${AGENT_TOOL_API_KEY:-replace-with-a-random-local-key}
+      ALLOW_UNBOUND_AGENT_ACTOR_FALLBACK: ${ALLOW_UNBOUND_AGENT_ACTOR_FALLBACK:-false}
     ports:
       - "8000:8000"
+    volumes:
+      - backend_uploads:/app/uploads
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ../frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  backend_uploads:

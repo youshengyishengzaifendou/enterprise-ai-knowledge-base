@@ -22,3 +22,9 @@ def get_current_actor(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown actor.")
     return user
+
+
+def get_management_actor(user: User = Depends(get_current_actor)) -> User:
+    if user.role != "admin" and user.knowledge_access_policy != "all":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Management permission required.")
+    return user

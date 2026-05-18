@@ -1,4 +1,5 @@
 from app.core.config import Settings
+from app.main import create_app
 
 
 def test_settings_ignores_openclaw_client_side_environment_variables(tmp_path):
@@ -21,3 +22,11 @@ def test_settings_ignores_openclaw_client_side_environment_variables(tmp_path):
     assert settings.app_env == "local"
     assert settings.database_url == "sqlite:///./enterprise_ai_assistant.db"
     assert settings.agent_tool_api_key == "local-key"
+
+
+def test_cors_allows_container_frontend_port():
+    app = create_app()
+    cors = next(middleware for middleware in app.user_middleware if middleware.cls.__name__ == "CORSMiddleware")
+
+    assert "http://localhost:8080" in cors.kwargs["allow_origins"]
+    assert "http://127.0.0.1:8080" in cors.kwargs["allow_origins"]

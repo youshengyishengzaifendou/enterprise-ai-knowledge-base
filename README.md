@@ -337,20 +337,28 @@ openclaw gateway restart
 
 ## Docker Compose
 
-```bash
-cd deploy
-docker compose up --build
-```
-
-当前 Compose 使用 PostgreSQL 和 Redis。后端模型已准备好迁移工具接入；第一阶段测试使用 SQLite，以便快速验证业务行为。
-
-当前 WSL 环境没有 `docker` 命令，因此本机尚未完成 Compose 运行验证。可以先用：
+一键启动：
 
 ```bash
-./scripts/check-docker.sh
+./scripts/docker-up.sh
 ```
 
-确认 Docker 可用后再启动 Compose。
+脚本会自动生成 `deploy/.env`，然后构建并启动整套服务。
+
+手动启动：
+
+```bash
+AGENT_TOOL_API_KEY="$(openssl rand -hex 32)" docker compose -f deploy/docker-compose.yml up --build
+```
+
+当前 Compose 会启动 PostgreSQL、Redis、后端和前端：
+
+- 后端：`http://127.0.0.1:8000`
+- 前端：`http://127.0.0.1:8080`
+- 后端启动时会自动执行 Alembic 迁移。
+- 上传原文档会保存到 Docker volume `deploy_backend_uploads`。
+
+如果 Docker Hub 拉取基础镜像超时，先配置可用的 registry mirror 或在网络恢复后重试同一条命令。
 
 ## 验证
 

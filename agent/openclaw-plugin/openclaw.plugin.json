@@ -22,6 +22,7 @@
       "kb_search",
       "kb_answer",
       "kb_find_source_file",
+      "kb_rebuild_index",
       "support_dashboard",
       "support_unanswered_questions",
       "support_update_unanswered_status",

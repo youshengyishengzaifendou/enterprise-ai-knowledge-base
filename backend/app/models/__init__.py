@@ -3,6 +3,9 @@ from app.models.confirmation import ConfirmationAction
 from app.models.customer import Customer
 from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
+from app.models.knowledge_document_group import KnowledgeDocumentGroup, KnowledgeDocumentGroupMembership, KnowledgeProjectPermission
+from app.models.knowledge_document_permission import KnowledgeDocumentPermission
+from app.models.knowledge_source_file import KnowledgeSourceFile, KnowledgeSourceFilePermission
 from app.models.project import Project
 from app.models.project_event import ProjectEvent
 from app.models.project_risk import ProjectRisk
@@ -16,6 +19,12 @@ __all__ = [
     "Customer",
     "KnowledgeChunk",
     "KnowledgeDocument",
+    "KnowledgeDocumentGroup",
+    "KnowledgeDocumentGroupMembership",
+    "KnowledgeDocumentPermission",
+    "KnowledgeProjectPermission",
+    "KnowledgeSourceFile",
+    "KnowledgeSourceFilePermission",
     "Project",
     "ProjectEvent",
     "ProjectRisk",

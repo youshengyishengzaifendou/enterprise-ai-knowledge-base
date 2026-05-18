@@ -8,8 +8,10 @@ from app.services.knowledge_service import ingest_document
 def seed_demo_data(db: Session) -> dict[str, str]:
     user = db.scalar(select(User).where(User.id == "user-demo"))
     if user is None:
-        user = User(id="user-demo", name="演示用户", email="demo@example.com", role="project_owner")
+        user = User(id="user-demo", name="演示用户", email="demo@example.com", role="project_owner", knowledge_access_policy="all")
         db.add(user)
+    else:
+        user.knowledge_access_policy = "all"
 
     for channel in ("openclaw", "feishu", "webchat"):
         binding = db.scalar(

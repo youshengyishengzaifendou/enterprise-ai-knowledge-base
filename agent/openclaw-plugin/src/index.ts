@@ -12,6 +12,9 @@ type ToolContext = {
 type OpenClawToolContext = {
   messageChannel?: string;
   requesterSenderId?: string;
+  accountId?: string;
+  messageAccountId?: string;
+  account?: string | { id?: string; accountId?: string };
   sessionId?: string;
   sessionKey?: string;
   getRuntimeConfig?: () => OpenClawConfig | undefined;
@@ -97,10 +100,26 @@ function resolveClientOptions(api: OpenClawPluginApi, context?: OpenClawToolCont
   };
 }
 
+function readAccountId(context?: OpenClawToolContext): string | undefined {
+  const account = context?.account;
+  const value =
+    context?.accountId ??
+    context?.messageAccountId ??
+    (typeof account === "string" ? account : account?.id ?? account?.accountId);
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function resolveExternalUserId(context?: OpenClawToolContext): string {
+  if (context?.messageChannel === "openclaw-weixin") {
+    return readAccountId(context) ?? context.requesterSenderId ?? "unknown";
+  }
+  return context?.requesterSenderId ?? "unknown";
+}
+
 function resolveToolContext(context?: OpenClawToolContext): ToolContext {
   return {
     channel: context?.messageChannel ?? "openclaw",
-    externalUserId: context?.requesterSenderId ?? "unknown",
+    externalUserId: resolveExternalUserId(context),
     conversationId: context?.sessionId ?? context?.sessionKey ?? null,
   };
 }
@@ -186,6 +205,14 @@ const schemas = {
     },
     required: ["query"],
   },
+  kb_rebuild_index: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      document_id: { type: "string", description: "Knowledge document id to rebuild chunk indexes for." },
+    },
+    required: ["document_id"],
+  },
   support_unanswered_questions: {
     type: "object",
     additionalProperties: false,
@@ -259,6 +286,12 @@ const toolDefinitions: ToolDefinition[] = [
       `${SUPPORT_TOOL_CONTEXT} Find the original source file linked to a knowledge article when the user asks for 原文档、原件、附件、文件、源文件, or wants a file sent back. Return source_file_path/source_file_name so the channel can send or expose the original file.`,
     optional: false,
     parameters: schemas.kb_find_source_file,
+  },
+  {
+    name: "kb_rebuild_index",
+    description: `${SUPPORT_TOOL_CONTEXT} Rebuild hybrid retrieval indexes for one knowledge document after import, correction, or suspected stale search results.`,
+    optional: false,
+    parameters: schemas.kb_rebuild_index,
   },
   {
     name: "support_dashboard",

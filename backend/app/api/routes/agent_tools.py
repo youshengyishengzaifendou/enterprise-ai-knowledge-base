@@ -10,7 +10,8 @@ from app.services.audit_service import write_audit_log
 from app.services.confirmation_service import create_confirmation, get_pending_confirmation, mark_completed
 from app.services.extraction_service import extract_project_update
 from app.services.identity_service import resolve_actor
-from app.services.knowledge_service import answer_with_knowledge, can_access_document, find_source_files, ingest_document, search_knowledge
+from app.services.knowledge_permission_service import can_access_document
+from app.services.knowledge_service import answer_with_knowledge, find_source_files, ingest_document, rebuild_document_index, search_knowledge
 from app.services.project_service import (
     create_project_event,
     create_project_task,
@@ -81,7 +82,7 @@ def _authorized_customer(db: Session, user: User, customer_id: object) -> Custom
 def customer_search(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
     user = resolve_actor(db, request.actor)
     query = str(request.input.get("query", "")).strip()
-    customers = search_customers(db, query, user=None)
+    customers = search_customers(db, query, user=user)
     response = AgentToolResponse(
         ok=True,
         data={"customers": [{"id": item.id, "name": item.name, "status": item.status, "owner_user_id": item.owner_user_id} for item in customers]},
@@ -94,7 +95,7 @@ def customer_search(request: AgentToolRequest, db: Session = Depends(get_db)) ->
 def project_search(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
     user = resolve_actor(db, request.actor)
     query = str(request.input.get("query", "")).strip()
-    projects = search_projects(db, query, request.input.get("customer_id"), user=None)
+    projects = search_projects(db, query, request.input.get("customer_id"), user=user)
     response = AgentToolResponse(
         ok=True,
         data={"projects": [{"id": item.id, "customer_id": item.customer_id, "name": item.name, "stage": item.stage, "status": item.status} for item in projects]},
@@ -197,7 +198,7 @@ def task_create(request: AgentToolRequest, db: Session = Depends(get_db)) -> Age
 def project_get_brief(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
     user = resolve_actor(db, request.actor)
     project = db.get(Project, str(request.input["project_id"]))
-    if project is None:
+    if user is None or project is None or not can_access_project(db, user, project):
         response = _permission_denied()
         return _with_audit(db, request, response, user.id if user else None, "project_get_brief", "permission_denied", "project", request.input["project_id"])
     brief = get_project_brief(db, str(request.input["project_id"]))
@@ -249,7 +250,13 @@ def confirm_action(request: AgentToolRequest, db: Session = Depends(get_db)) -> 
         return _with_audit(db, request, response, user.id, "confirm_action", "write", "project_task", task.id)
 
     if confirmation.action == "kb_ingest_document":
-        document = ingest_document(db, payload=payload, user_id=user.id)
+        document = ingest_document(
+            db,
+            payload=payload,
+            user_id=user.id,
+            source_channel=request.actor.channel,
+            source_external_user_id=request.actor.external_user_id,
+        )
         mark_completed(db, confirmation)
         response = AgentToolResponse(
             ok=True,
@@ -293,7 +300,13 @@ def kb_ingest_document(request: AgentToolRequest, db: Session = Depends(get_db))
         )
         return _with_audit(db, request, response, user.id, "kb_ingest_document", "confirm_required", "confirmation", confirmation.id)
 
-    document = ingest_document(db, payload=request.input, user_id=user.id)
+    document = ingest_document(
+        db,
+        payload=request.input,
+        user_id=user.id,
+        source_channel=request.actor.channel,
+        source_external_user_id=request.actor.external_user_id,
+    )
     response = AgentToolResponse(
         ok=True,
         data={"document": {"id": document.id, "title": document.title, "project_id": document.project_id, "customer_id": document.customer_id}},
@@ -306,11 +319,13 @@ def kb_ingest_document(request: AgentToolRequest, db: Session = Depends(get_db))
 @router.post("/kb_search", response_model=AgentToolResponse)
 def kb_search(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
     user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "kb_search", "denied")
 
     matches = search_knowledge(
         db,
         query=str(request.input.get("query", "")).strip(),
-        user=None,
+        user=user,
         project_id=request.input.get("project_id"),
         customer_id=request.input.get("customer_id"),
         limit=int(request.input.get("limit", 5)),
@@ -328,6 +343,9 @@ def kb_search(request: AgentToolRequest, db: Session = Depends(get_db)) -> Agent
                     "chunk_index": row["chunk"].chunk_index,
                     "snippet": row["chunk"].content_text,
                     "score": row["score"],
+                    "keyword_score": row.get("keyword_score", 0),
+                    "vector_score": row.get("vector_score", 0),
+                    "retrieval_method": row.get("retrieval_method", "keyword"),
                     "source_url": row["document"].source_url,
                 }
                 for row in matches
@@ -345,9 +363,12 @@ def kb_search(request: AgentToolRequest, db: Session = Depends(get_db)) -> Agent
 @router.post("/kb_find_source_file", response_model=AgentToolResponse)
 def kb_find_source_file(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
     user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "kb_find_source_file", "denied")
     files = find_source_files(
         db,
         query=str(request.input.get("query", "")).strip(),
+        user=user,
         project_id=request.input.get("project_id"),
         customer_id=request.input.get("customer_id"),
         limit=int(request.input.get("limit", 5)),
@@ -364,14 +385,34 @@ def kb_find_source_file(request: AgentToolRequest, db: Session = Depends(get_db)
     return _with_audit(db, request, response, user.id if user else None, "kb_find_source_file", "query")
 
 
+@router.post("/kb_rebuild_index", response_model=AgentToolResponse)
+def kb_rebuild_index(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "kb_rebuild_index", "denied")
+    document = db.get(KnowledgeDocument, str(request.input["document_id"]))
+    if document is None or not can_access_document(db, user, document):
+        return _with_audit(db, request, _permission_denied(), user.id, "kb_rebuild_index", "permission_denied", "knowledge_document", request.input.get("document_id"))
+    result = rebuild_document_index(db, document.id)
+    response = AgentToolResponse(
+        ok=True,
+        data=result,
+        citations=[{"type": "knowledge_document", "id": document.id, "title": document.title, "updated_at": document.updated_at}],
+        message=f"已重建 {result['indexed_chunks']} 个知识片段索引。",
+    )
+    return _with_audit(db, request, response, user.id, "kb_rebuild_index", "write", "knowledge_document", document.id)
+
+
 @router.post("/kb_answer", response_model=AgentToolResponse)
 def kb_answer(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
     user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "kb_answer", "denied")
 
     result = answer_with_knowledge(
         db,
         query=str(request.input.get("query", "")).strip(),
-        user=None,
+        user=user,
         project_id=request.input.get("project_id"),
         customer_id=request.input.get("customer_id"),
         limit=int(request.input.get("limit", 3)),
@@ -389,6 +430,8 @@ def kb_answer(request: AgentToolRequest, db: Session = Depends(get_db)) -> Agent
 @router.post("/support_dashboard", response_model=AgentToolResponse)
 def support_dashboard(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
     user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "support_dashboard", "denied")
     dashboard = get_support_operations_dashboard(db)
     response = AgentToolResponse(ok=True, data=dashboard, message="已生成客服知识运营看板。")
     return _with_audit(db, request, response, user.id if user else None, "support_dashboard", "query")
@@ -397,6 +440,8 @@ def support_dashboard(request: AgentToolRequest, db: Session = Depends(get_db)) 
 @router.post("/support_unanswered_questions", response_model=AgentToolResponse)
 def support_unanswered_questions(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
     user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "support_unanswered_questions", "denied")
     limit = int(request.input.get("limit", 25))
     status = str(request.input["status"]) if request.input.get("status") else None
     response = AgentToolResponse(
@@ -410,6 +455,8 @@ def support_unanswered_questions(request: AgentToolRequest, db: Session = Depend
 @router.post("/support_update_unanswered_status", response_model=AgentToolResponse)
 def support_update_unanswered_status(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
     user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "support_update_unanswered_status", "denied")
     try:
         item = update_unanswered_question_status(db, str(request.input["unanswered_id"]), status=str(request.input["status"]))
     except ValueError as error:

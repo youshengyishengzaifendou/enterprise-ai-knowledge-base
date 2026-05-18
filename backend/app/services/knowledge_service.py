@@ -1,15 +1,31 @@
 from collections.abc import Iterable
-from datetime import timedelta
+from datetime import datetime, timedelta
+import hashlib
+import json
+import math
+from pathlib import Path
 import re
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Customer, KnowledgeChunk, KnowledgeDocument, Project, User
+from app.models import (
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeDocumentGroup,
+    KnowledgeDocumentGroupMembership,
+    KnowledgeDocumentPermission,
+    KnowledgeProjectPermission,
+    KnowledgeSourceFile,
+    KnowledgeSourceFilePermission,
+    User,
+)
 from app.schemas.agent_tools import Citation
-from app.services.permission_service import can_access_customer, can_access_project
+from app.services.knowledge_permission_service import can_access_document, can_access_source_file
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+UPLOAD_ROOT = PROJECT_ROOT / "uploads" / "knowledge_sources"
 WEEKDAY_OFFSETS = {
     "下周一": 0,
     "下周二": 1,
@@ -20,6 +36,9 @@ WEEKDAY_OFFSETS = {
     "下周日": 6,
     "下周天": 6,
 }
+
+EMBEDDING_DIMENSIONS = 64
+EMBEDDING_MODEL = "local-hash-v1"
 
 
 def _split_paragraphs(text: str) -> list[str]:
@@ -51,18 +70,122 @@ def build_chunks(text: str, max_chars: int = 400) -> list[str]:
     return chunks or [text.strip()]
 
 
-def can_access_document(db: Session, user: User | None, document: KnowledgeDocument) -> bool:
-    if user is None:
-        return True
-    if user.role == "admin":
-        return True
-    if document.project_id:
-        project = db.get(Project, document.project_id)
-        return project is not None and can_access_project(db, user, project)
-    if document.customer_id:
-        customer = db.get(Customer, document.customer_id)
-        return customer is not None and can_access_customer(db, user, customer)
-    return True
+def _tokenize_for_retrieval(text: str) -> list[str]:
+    normalized = text.lower()
+    ascii_terms = re.findall(r"[a-z0-9]+", normalized)
+    cjk_chars = re.findall(r"[\u4e00-\u9fff]", normalized)
+    cjk_bigrams = [f"{cjk_chars[index]}{cjk_chars[index + 1]}" for index in range(len(cjk_chars) - 1)]
+    return [term for term in [*ascii_terms, *cjk_chars, *cjk_bigrams] if term.strip()]
+
+
+def _embed_text(text: str) -> list[float]:
+    vector = [0.0] * EMBEDDING_DIMENSIONS
+    for token in _tokenize_for_retrieval(text):
+        digest = hashlib.sha256(token.encode("utf-8")).digest()
+        index = int.from_bytes(digest[:4], "big") % EMBEDDING_DIMENSIONS
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        vector[index] += sign
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm == 0:
+        return vector
+    return [round(value / norm, 6) for value in vector]
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    return sum(left[index] * right[index] for index in range(len(left)))
+
+
+def _decode_embedding(value: str | None) -> list[float]:
+    if not value:
+        return []
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return [float(item) for item in decoded if isinstance(item, (int, float))]
+
+
+def _upsert_source_file(
+    db: Session,
+    *,
+    payload: dict,
+    user_id: str,
+    source_channel: str | None,
+    source_external_user_id: str | None,
+) -> KnowledgeSourceFile | None:
+    source_file_path = payload.get("source_file_path")
+    if not source_file_path:
+        return None
+    source_file = db.scalar(select(KnowledgeSourceFile).where(KnowledgeSourceFile.file_path == str(source_file_path)))
+    if source_file is None:
+        source_file = KnowledgeSourceFile(
+            file_name=str(payload.get("source_file_name") or source_file_path),
+            file_path=str(source_file_path),
+            mime_type=payload.get("source_file_mime_type"),
+            file_size=int(payload["source_file_size"]) if payload.get("source_file_size") not in (None, "") else None,
+            storage=payload.get("source_file_storage"),
+            uploaded_by=user_id,
+            source_channel=source_channel,
+            source_external_user_id=source_external_user_id,
+        )
+        db.add(source_file)
+        db.flush()
+        return source_file
+    source_file.file_name = str(payload.get("source_file_name") or source_file.file_name)
+    source_file.mime_type = payload.get("source_file_mime_type") or source_file.mime_type
+    source_file.storage = payload.get("source_file_storage") or source_file.storage
+    source_file.source_channel = source_channel or source_file.source_channel
+    source_file.source_external_user_id = source_external_user_id or source_file.source_external_user_id
+    if payload.get("source_file_size") not in (None, ""):
+        source_file.file_size = int(payload["source_file_size"])
+    return source_file
+
+
+def _display_source_file_path(source_file_path: str | None) -> str | None:
+    if not source_file_path:
+        return None
+    path = Path(source_file_path)
+    if path.is_absolute():
+        return source_file_path
+    upload_prefix = Path("uploads") / "knowledge_sources"
+    try:
+        relative_to_upload_root = path.relative_to(upload_prefix)
+    except ValueError:
+        return source_file_path
+    return str(UPLOAD_ROOT / relative_to_upload_root)
+
+
+def backfill_source_files(db: Session) -> dict[str, int]:
+    documents = db.scalars(
+        select(KnowledgeDocument).where(
+            KnowledgeDocument.source_file_path.is_not(None),
+            KnowledgeDocument.source_file_id.is_(None),
+        )
+    ).all()
+    count = 0
+    for document in documents:
+        source_file = _upsert_source_file(
+            db,
+            payload={
+                "source_file_path": document.source_file_path,
+                "source_file_name": document.source_file_name,
+                "source_file_mime_type": document.source_file_mime_type,
+                "source_file_size": document.source_file_size,
+                "source_file_storage": document.source_file_storage,
+            },
+            user_id=document.created_by,
+            source_channel=document.source_channel,
+            source_external_user_id=document.source_external_user_id,
+        )
+        if source_file is not None:
+            document.source_file_id = source_file.id
+            count += 1
+    db.commit()
+    return {"backfilled_count": count}
 
 
 def _apply_demo_document_scope(payload: dict) -> dict:
@@ -77,9 +200,23 @@ def _apply_demo_document_scope(payload: dict) -> dict:
     return scoped
 
 
-def ingest_document(db: Session, *, payload: dict, user_id: str) -> KnowledgeDocument:
+def ingest_document(
+    db: Session,
+    *,
+    payload: dict,
+    user_id: str,
+    source_channel: str | None = None,
+    source_external_user_id: str | None = None,
+) -> KnowledgeDocument:
     payload = _apply_demo_document_scope(payload)
     content_text = str(payload["content_text"]).strip()
+    source_file = _upsert_source_file(
+        db,
+        payload=payload,
+        user_id=user_id,
+        source_channel=source_channel,
+        source_external_user_id=source_external_user_id,
+    )
     document = KnowledgeDocument(
         title=str(payload["title"]).strip(),
         source_type=str(payload.get("source_type") or "manual"),
@@ -89,6 +226,12 @@ def ingest_document(db: Session, *, payload: dict, user_id: str) -> KnowledgeDoc
         source_file_mime_type=payload.get("source_file_mime_type"),
         source_file_size=int(payload["source_file_size"]) if payload.get("source_file_size") not in (None, "") else None,
         source_file_storage=payload.get("source_file_storage"),
+        source_file_id=source_file.id if source_file else payload.get("source_file_id"),
+        source_channel=source_channel or payload.get("source_channel"),
+        source_external_user_id=source_external_user_id or payload.get("source_external_user_id"),
+        parse_status=str(payload.get("parse_status") or "parsed"),
+        parse_error=payload.get("parse_error"),
+        index_status=str(payload.get("index_status") or "indexed"),
         customer_id=payload.get("customer_id"),
         project_id=payload.get("project_id"),
         summary=payload.get("summary"),
@@ -99,12 +242,14 @@ def ingest_document(db: Session, *, payload: dict, user_id: str) -> KnowledgeDoc
     db.flush()
 
     for index, chunk_text in enumerate(build_chunks(content_text)):
+        chunk = KnowledgeChunk(
+            document_id=document.id,
+            chunk_index=index,
+            content_text=chunk_text,
+        )
+        _index_chunk(chunk, document.title)
         db.add(
-            KnowledgeChunk(
-                document_id=document.id,
-                chunk_index=index,
-                content_text=chunk_text,
-            )
+            chunk
         )
 
     db.commit()
@@ -116,6 +261,7 @@ def find_source_files(
     db: Session,
     *,
     query: str,
+    user: User | None = None,
     project_id: str | None = None,
     customer_id: str | None = None,
     limit: int = 5,
@@ -143,23 +289,132 @@ def find_source_files(
         .order_by(KnowledgeDocument.updated_at.desc())
         .limit(limit)
     ).all()
+    visible_documents = []
+    for document in documents:
+        source_file = db.get(KnowledgeSourceFile, document.source_file_id) if document.source_file_id else None
+        if can_access_document(db, user, document) or (source_file is not None and can_access_source_file(db, user, source_file)):
+            visible_documents.append(document)
     return [
         {
             "document_id": document.id,
             "document_title": document.title,
+            "source_file_id": document.source_file_id,
             "project_id": document.project_id,
             "customer_id": document.customer_id,
             "source_type": document.source_type,
+            "source_channel": document.source_channel,
+            "source_external_user_id": document.source_external_user_id,
             "source_url": document.source_url,
-            "source_file_path": document.source_file_path,
+            "source_file_path": _display_source_file_path(document.source_file_path),
             "source_file_name": document.source_file_name,
             "source_file_mime_type": document.source_file_mime_type,
             "source_file_size": document.source_file_size,
             "source_file_storage": document.source_file_storage,
             "updated_at": document.updated_at,
         }
-        for document in documents
+        for document in visible_documents[:limit]
     ]
+
+
+def grant_source_file_permission(
+    db: Session,
+    *,
+    source_file_id: str,
+    user_id: str,
+    access_level: str = "read",
+) -> KnowledgeSourceFilePermission:
+    permission = db.scalar(
+        select(KnowledgeSourceFilePermission).where(
+            KnowledgeSourceFilePermission.source_file_id == source_file_id,
+            KnowledgeSourceFilePermission.user_id == user_id,
+        )
+    )
+    if permission is None:
+        permission = KnowledgeSourceFilePermission(source_file_id=source_file_id, user_id=user_id, access_level=access_level)
+        db.add(permission)
+    else:
+        permission.access_level = access_level
+    db.commit()
+    db.refresh(permission)
+    return permission
+
+
+def batch_grant_documents(db: Session, *, document_ids: list[str], user_id: str, access_level: str = "read") -> list[KnowledgeDocumentPermission]:
+    permissions: list[KnowledgeDocumentPermission] = []
+    for document_id in document_ids:
+        permission = db.scalar(
+            select(KnowledgeDocumentPermission).where(
+                KnowledgeDocumentPermission.document_id == document_id,
+                KnowledgeDocumentPermission.user_id == user_id,
+            )
+        )
+        if permission is None:
+            permission = KnowledgeDocumentPermission(document_id=document_id, user_id=user_id, access_level=access_level)
+            db.add(permission)
+        else:
+            permission.access_level = access_level
+        permissions.append(permission)
+    db.commit()
+    return permissions
+
+
+def create_document_group(db: Session, *, name: str, created_by: str, description: str | None = None) -> KnowledgeDocumentGroup:
+    group = KnowledgeDocumentGroup(name=name, description=description, created_by=created_by)
+    db.add(group)
+    db.commit()
+    db.refresh(group)
+    return group
+
+
+def add_document_to_group(db: Session, *, group_id: str, document_id: str) -> KnowledgeDocumentGroupMembership:
+    membership = db.scalar(
+        select(KnowledgeDocumentGroupMembership).where(
+            KnowledgeDocumentGroupMembership.group_id == group_id,
+            KnowledgeDocumentGroupMembership.document_id == document_id,
+        )
+    )
+    if membership is None:
+        membership = KnowledgeDocumentGroupMembership(group_id=group_id, document_id=document_id)
+        db.add(membership)
+        db.commit()
+        db.refresh(membership)
+    return membership
+
+
+def grant_project_permission(db: Session, *, project_id: str, user_id: str, access_level: str = "read") -> KnowledgeProjectPermission:
+    permission = db.scalar(
+        select(KnowledgeProjectPermission).where(
+            KnowledgeProjectPermission.project_id == project_id,
+            KnowledgeProjectPermission.user_id == user_id,
+        )
+    )
+    if permission is None:
+        permission = KnowledgeProjectPermission(project_id=project_id, user_id=user_id, access_level=access_level)
+        db.add(permission)
+    else:
+        permission.access_level = access_level
+    db.commit()
+    db.refresh(permission)
+    return permission
+
+
+def rebuild_document_index(db: Session, document_id: str) -> dict:
+    document = db.get(KnowledgeDocument, document_id)
+    if document is None:
+        raise ValueError("knowledge document not found")
+    chunks = db.scalars(
+        select(KnowledgeChunk).where(KnowledgeChunk.document_id == document.id).order_by(KnowledgeChunk.chunk_index.asc())
+    ).all()
+    for chunk in chunks:
+        _index_chunk(chunk, document.title)
+    document.index_status = "indexed"
+    db.commit()
+    return {
+        "document_id": document.id,
+        "document_title": document.title,
+        "indexed_chunks": len(chunks),
+        "index_status": "indexed",
+    }
 
 
 def _score_chunk(query: str, text: str, title: str) -> int:
@@ -177,6 +432,30 @@ def _score_chunk(query: str, text: str, title: str) -> int:
         bigrams = [item for item in bigrams if item.strip()]
         return sum(lower_text.count(item) + lower_title.count(item) * 2 for item in bigrams)
     return sum(lower_text.count(term) + lower_title.count(term) * 2 for term in terms)
+
+
+def _hybrid_score_chunk(query: str, chunk: KnowledgeChunk, title: str, query_embedding: list[float]) -> dict[str, float | str]:
+    keyword_score = float(_score_chunk(query, chunk.content_text, title))
+    if not chunk.embedding_json:
+        _index_chunk(chunk, title)
+    vector_score = max(_cosine_similarity(query_embedding, _decode_embedding(chunk.embedding_json)), 0.0)
+    normalized_keyword = min(keyword_score / 6.0, 1.0)
+    score = normalized_keyword * 0.55 + vector_score * 0.45
+    return {
+        "score": round(score, 6),
+        "keyword_score": keyword_score,
+        "vector_score": round(vector_score, 6),
+        "retrieval_method": "hybrid",
+    }
+
+
+def _index_chunk(chunk: KnowledgeChunk, title: str) -> None:
+    embedding = _embed_text(f"{title}\n{chunk.content_text}")
+    chunk.embedding_model = EMBEDDING_MODEL
+    chunk.embedding_json = json.dumps(embedding, separators=(",", ":"))
+    chunk.index_status = "indexed"
+    chunk.token_count = len(_tokenize_for_retrieval(chunk.content_text))
+    chunk.indexed_at = datetime.now()
 
 
 def search_knowledge(
@@ -198,17 +477,18 @@ def search_knowledge(
     ]
 
     results: list[dict] = []
+    query_embedding = _embed_text(query)
     for document in visible_documents:
         chunks = db.scalars(
             select(KnowledgeChunk).where(KnowledgeChunk.document_id == document.id).order_by(KnowledgeChunk.chunk_index.asc())
         ).all()
         for chunk in chunks:
-            score = _score_chunk(query, chunk.content_text, document.title)
-            if score <= 0:
+            scores = _hybrid_score_chunk(query, chunk, document.title, query_embedding)
+            if float(scores["score"]) <= 0:
                 continue
             results.append(
                 {
-                    "score": score,
+                    **scores,
                     "document": document,
                     "chunk": chunk,
                 }
@@ -338,6 +618,9 @@ def answer_with_knowledge(
                 "chunk_index": row["chunk"].chunk_index,
                 "snippet": row["chunk"].content_text,
                 "score": row["score"],
+                "keyword_score": row.get("keyword_score", 0),
+                "vector_score": row.get("vector_score", 0),
+                "retrieval_method": row.get("retrieval_method", "keyword"),
                 "source_url": row["document"].source_url,
                 "source_file_name": row["document"].source_file_name,
                 "source_file_path": row["document"].source_file_path,

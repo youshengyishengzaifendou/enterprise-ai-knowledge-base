@@ -183,7 +183,7 @@ select {
 
 .operations-content {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(280px, 1.2fr);
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 14px;
   padding: 16px;
 }
@@ -368,6 +368,20 @@ select {
   letter-spacing: 0;
 }
 
+.utility-card {
+  align-items: stretch;
+  text-align: left;
+}
+
+.utility-card input {
+  min-width: 0;
+}
+
+.danger-button {
+  border-color: #f1b3b3;
+  color: #9b1c1c;
+}
+
 .viewer-layout {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
@@ -415,6 +429,34 @@ select {
 .table-button:hover {
   border-color: #ccd5df;
   background: #f3f7fb;
+}
+
+.permission-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #dfe4ea;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.permission-panel span {
+  color: #3b4650;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.permission-actions,
+.permission-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.permission-form input {
+  min-width: 0;
+  flex: 1 1 180px;
 }
 
 .records-panel {

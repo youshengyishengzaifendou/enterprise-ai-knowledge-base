@@ -71,6 +71,14 @@ function App() {
   const [importingFaq, setImportingFaq] = useState(false);
   const [importMessage, setImportMessage] = useState("");
   const [loadingFaqFile, setLoadingFaqFile] = useState(false);
+  const [permissionUserId, setPermissionUserId] = useState("");
+  const [sourceFilePermissionUserId, setSourceFilePermissionUserId] = useState("");
+  const [batchPermissionUserId, setBatchPermissionUserId] = useState("");
+  const [groupName, setGroupName] = useState("");
+  const [groupDocumentId, setGroupDocumentId] = useState("");
+  const [projectPermissionUserId, setProjectPermissionUserId] = useState("");
+  const [channelAccountIds, setChannelAccountIds] = useState("");
+  const [channelAccountAliasUserId, setChannelAccountAliasUserId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -149,10 +157,10 @@ function App() {
     setError("");
     try {
       const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-      if (!["csv", "txt", "md", "markdown", "pdf", "docx", "xlsx"].includes(extension)) {
-        throw new Error("当前支持 CSV、TXT、Markdown、PDF、Word(docx)、Excel(xlsx) 文档。");
+      if (!["csv", "txt", "md", "markdown", "pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp", "bmp"].includes(extension)) {
+        throw new Error("当前支持 CSV、TXT、Markdown、PDF、Word(docx)、Excel(xlsx)、图片(png/jpg/webp/bmp)。");
       }
-      if (["pdf", "docx", "xlsx"].includes(extension)) {
+      if (["pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp", "bmp"].includes(extension)) {
         await importKnowledgeFile(file, extension);
         return;
       }
@@ -202,6 +210,168 @@ function App() {
       await loadOverview();
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "更新无答案问题失败");
+    }
+  }
+
+  async function rebuildIndex(documentId: JsonValue) {
+    if (typeof documentId !== "string") return;
+    setError("");
+    try {
+      const headers: HeadersInit = {};
+      if (apiKey.trim()) {
+        headers.Authorization = `Bearer ${apiKey.trim()}`;
+      }
+      await fetchRebuildIndexWithFallback(backendUrl, headers, documentId);
+      await loadOverview();
+    } catch (rebuildError) {
+      setError(rebuildError instanceof Error ? rebuildError.message : "重建索引失败");
+    }
+  }
+
+  async function updateUserKnowledgePolicy(userId: JsonValue, policy: "all" | "own") {
+    if (typeof userId !== "string") return;
+    setError("");
+    try {
+      const headers: HeadersInit = { "Content-Type": "application/json" };
+      if (apiKey.trim()) {
+        headers.Authorization = `Bearer ${apiKey.trim()}`;
+      }
+      await fetchUpdateUserKnowledgePolicyWithFallback(backendUrl, headers, userId, policy);
+      await loadOverview();
+    } catch (policyError) {
+      setError(policyError instanceof Error ? policyError.message : "更新用户知识权限失败");
+    }
+  }
+
+  async function grantKnowledgePermission(documentId: JsonValue) {
+    if (typeof documentId !== "string") return;
+    const userId = permissionUserId.trim();
+    if (!userId) return;
+    setError("");
+    try {
+      const headers: HeadersInit = { "Content-Type": "application/json" };
+      if (apiKey.trim()) {
+        headers.Authorization = `Bearer ${apiKey.trim()}`;
+      }
+      await fetchGrantKnowledgePermissionWithFallback(backendUrl, headers, documentId, userId);
+      setPermissionUserId("");
+      await loadOverview();
+    } catch (permissionError) {
+      setError(permissionError instanceof Error ? permissionError.message : "授权知识文档失败");
+    }
+  }
+
+  async function grantSourceFilePermission(sourceFileId: JsonValue) {
+    if (typeof sourceFileId !== "string") return;
+    const userId = sourceFilePermissionUserId.trim();
+    if (!userId) return;
+    setError("");
+    try {
+      await fetchPostWithFallback(backendUrl, jsonHeaders(apiKey), `/api/database/source-files/${encodeURIComponent(sourceFileId)}/permissions`, {
+        user_id: userId,
+      });
+      setSourceFilePermissionUserId("");
+      await loadOverview();
+    } catch (permissionError) {
+      setError(permissionError instanceof Error ? permissionError.message : "授权原文档失败");
+    }
+  }
+
+  async function batchGrantVisibleDocuments() {
+    const userId = batchPermissionUserId.trim();
+    const documentIds = filteredRows.map((row) => row.id).filter((id): id is string => typeof id === "string");
+    if (!userId || activeTable?.id !== "knowledge_documents" || documentIds.length === 0) return;
+    setError("");
+    try {
+      await fetchPostWithFallback(backendUrl, jsonHeaders(apiKey), "/api/database/knowledge/batch-permissions", {
+        user_id: userId,
+        document_ids: documentIds,
+      });
+      setBatchPermissionUserId("");
+      await loadOverview();
+    } catch (permissionError) {
+      setError(permissionError instanceof Error ? permissionError.message : "批量授权失败");
+    }
+  }
+
+  async function createKnowledgeGroup() {
+    const name = groupName.trim();
+    if (!name) return;
+    setError("");
+    try {
+      await fetchPostWithFallback(backendUrl, jsonHeaders(apiKey), "/api/database/knowledge/groups", { name, created_by: "user-demo" });
+      setGroupName("");
+      await loadOverview();
+    } catch (groupError) {
+      setError(groupError instanceof Error ? groupError.message : "创建分组失败");
+    }
+  }
+
+  async function addDocumentToGroup(groupId: JsonValue) {
+    if (typeof groupId !== "string") return;
+    const documentId = groupDocumentId.trim();
+    if (!documentId) return;
+    setError("");
+    try {
+      await fetchPostWithFallback(backendUrl, jsonHeaders(apiKey), `/api/database/knowledge/groups/${encodeURIComponent(groupId)}/documents`, {
+        document_id: documentId,
+      });
+      setGroupDocumentId("");
+      await loadOverview();
+    } catch (groupError) {
+      setError(groupError instanceof Error ? groupError.message : "添加分组文档失败");
+    }
+  }
+
+  async function grantProjectKnowledgePermission(projectId: JsonValue) {
+    if (typeof projectId !== "string") return;
+    const userId = projectPermissionUserId.trim();
+    if (!userId) return;
+    setError("");
+    try {
+      await fetchPostWithFallback(backendUrl, jsonHeaders(apiKey), `/api/database/projects/${encodeURIComponent(projectId)}/knowledge-permissions`, {
+        user_id: userId,
+      });
+      setProjectPermissionUserId("");
+      await loadOverview();
+    } catch (permissionError) {
+      setError(permissionError instanceof Error ? permissionError.message : "授权项目知识失败");
+    }
+  }
+
+  async function disableSelectedUser(userId: JsonValue) {
+    if (typeof userId !== "string") return;
+    setError("");
+    try {
+      await fetchPostWithFallback(backendUrl, jsonHeaders(apiKey), `/api/database/users/${encodeURIComponent(userId)}/disable`, {
+        actor_user_id: "user-demo",
+      });
+      await loadOverview();
+    } catch (disableError) {
+      setError(disableError instanceof Error ? disableError.message : "禁用用户失败");
+    }
+  }
+
+  async function syncWeixinChannelAccounts() {
+    const accountIds = channelAccountIds
+      .split(/[\s,，]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (accountIds.length === 0) return;
+    const aliasUserId = channelAccountAliasUserId.trim();
+    setError("");
+    try {
+      const payload: Record<string, JsonValue> = aliasUserId
+        ? { channel: "openclaw-weixin", accounts: accountIds.map((accountId) => ({ account_id: accountId, user_id: aliasUserId })) }
+        : { channel: "openclaw-weixin", account_ids: accountIds };
+      const response = await fetchPostWithFallback(backendUrl, jsonHeaders(apiKey), "/api/database/users/channel-accounts/sync", payload);
+      const body = (await response.json()) as { synced_count?: number };
+      setImportMessage(`已同步 ${body.synced_count ?? 0} 个微信账号到知识库用户`);
+      setChannelAccountIds("");
+      setChannelAccountAliasUserId("");
+      await loadOverview();
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : "同步微信账号失败");
     }
   }
 
@@ -305,6 +475,13 @@ function App() {
       ) : null}
 
       <section className="summary-grid">
+        <div className="summary-card utility-card">
+          <span>新建文档分组</span>
+          <input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="分组名称" />
+          <button className="secondary-button compact-button" onClick={() => void createKnowledgeGroup()} disabled={!groupName.trim()}>
+            创建
+          </button>
+        </div>
         {(data?.tables ?? []).map((table) => (
           <button
             key={table.id}
@@ -421,6 +598,58 @@ function App() {
                   {activeTable?.id === "knowledge_documents" && selectedRow.source_file_path ? (
                     <SourceFileActions row={selectedRow} onCopy={(value) => void copyText(value)} />
                   ) : null}
+                  {activeTable?.id === "knowledge_documents" ? (
+                    <button className="secondary-button" onClick={() => void rebuildIndex(selectedRow.id)}>
+                      <RefreshCw size={16} />
+                      <span>重建索引</span>
+                    </button>
+                  ) : null}
+                  {activeTable?.id === "knowledge_documents" ? (
+                    <PermissionGrantPanel
+                      label="授权指定用户查看这篇知识"
+                      userId={permissionUserId}
+                      onUserIdChange={setPermissionUserId}
+                      onGrant={() => void grantKnowledgePermission(selectedRow.id)}
+                    />
+                  ) : null}
+                  {activeTable?.id === "knowledge_documents" ? (
+                    <BulkGrantPanel userId={batchPermissionUserId} onUserIdChange={setBatchPermissionUserId} onGrant={() => void batchGrantVisibleDocuments()} />
+                  ) : null}
+                  {activeTable?.id === "knowledge_source_files" ? (
+                    <PermissionGrantPanel
+                      label="授权指定用户查看这个原文档"
+                      userId={sourceFilePermissionUserId}
+                      onUserIdChange={setSourceFilePermissionUserId}
+                      onGrant={() => void grantSourceFilePermission(selectedRow.id)}
+                    />
+                  ) : null}
+                  {activeTable?.id === "users" ? (
+                    <ChannelAccountSyncPanel
+                      accountIds={channelAccountIds}
+                      aliasUserId={channelAccountAliasUserId}
+                      onAccountIdsChange={setChannelAccountIds}
+                      onAliasUserIdChange={setChannelAccountAliasUserId}
+                      onSync={() => void syncWeixinChannelAccounts()}
+                    />
+                  ) : null}
+                  {activeTable?.id === "users" ? (
+                    <UserPolicyActions
+                      row={selectedRow}
+                      onUpdate={(policy) => void updateUserKnowledgePolicy(selectedRow.id, policy)}
+                      onDisable={() => void disableSelectedUser(selectedRow.id)}
+                    />
+                  ) : null}
+                  {activeTable?.id === "knowledge_document_groups" ? (
+                    <GroupMembershipPanel documentId={groupDocumentId} onDocumentIdChange={setGroupDocumentId} onAdd={() => void addDocumentToGroup(selectedRow.id)} />
+                  ) : null}
+                  {activeTable?.id === "projects" ? (
+                    <PermissionGrantPanel
+                      label="授权指定用户查看这个项目下的知识"
+                      userId={projectPermissionUserId}
+                      onUserIdChange={setProjectPermissionUserId}
+                      onGrant={() => void grantProjectKnowledgePermission(selectedRow.id)}
+                    />
+                  ) : null}
                   {relatedError ? <div className="error-banner compact">{relatedError}</div> : null}
                 <dl>
                   {Object.entries(selectedRow).map(([key, value]) => (
@@ -453,6 +682,121 @@ function SourceFileActions({ row, onCopy }: { row: Record<string, JsonValue>; on
         <Copy size={16} />
         <span>复制路径</span>
       </button>
+    </div>
+  );
+}
+
+function ChannelAccountSyncPanel({
+  accountIds,
+  aliasUserId,
+  onAccountIdsChange,
+  onAliasUserIdChange,
+  onSync,
+}: {
+  accountIds: string;
+  aliasUserId: string;
+  onAccountIdsChange: (value: string) => void;
+  onAliasUserIdChange: (value: string) => void;
+  onSync: () => void;
+}) {
+  return (
+    <div className="permission-panel">
+      <span>同步 OpenClaw 微信账号到知识库用户</span>
+      <div className="permission-form">
+        <input value={accountIds} onChange={(event) => onAccountIdsChange(event.target.value)} placeholder="实际账号 ID，例如 3f81836398cd-im-bot" />
+        <input value={aliasUserId} onChange={(event) => onAliasUserIdChange(event.target.value)} placeholder="业务用户 ID，例如 wx-wangsuzhen" />
+        <button className="secondary-button compact-button" onClick={onSync} disabled={!accountIds.trim()}>
+          同步账号
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function UserPolicyActions({
+  row,
+  onUpdate,
+  onDisable,
+}: {
+  row: Record<string, JsonValue>;
+  onUpdate: (policy: "all" | "own") => void;
+  onDisable: () => void;
+}) {
+  const currentPolicy = row.knowledge_access_policy === "all" ? "all" : "own";
+  return (
+    <div className="permission-panel">
+      <span>知识权限：{currentPolicy === "all" ? "全库可见" : "仅自己文档"}</span>
+      <div className="permission-actions">
+        <button className="secondary-button compact-button" onClick={() => onUpdate("all")}>
+          全库可见
+        </button>
+        <button className="secondary-button compact-button" onClick={() => onUpdate("own")}>
+          仅自己文档
+        </button>
+        <button className="secondary-button compact-button danger-button" onClick={onDisable} disabled={row.status === "disabled"}>
+          禁用账号
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PermissionGrantPanel({
+  label,
+  userId,
+  onUserIdChange,
+  onGrant,
+}: {
+  label: string;
+  userId: string;
+  onUserIdChange: (value: string) => void;
+  onGrant: () => void;
+}) {
+  return (
+    <div className="permission-panel">
+      <span>{label}</span>
+      <div className="permission-form">
+        <input value={userId} onChange={(event) => onUserIdChange(event.target.value)} placeholder="输入用户 ID" />
+        <button className="secondary-button compact-button" onClick={onGrant} disabled={!userId.trim()}>
+          授权
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BulkGrantPanel({ userId, onUserIdChange, onGrant }: { userId: string; onUserIdChange: (value: string) => void; onGrant: () => void }) {
+  return (
+    <div className="permission-panel">
+      <span>批量授权当前筛选出的知识文档</span>
+      <div className="permission-form">
+        <input value={userId} onChange={(event) => onUserIdChange(event.target.value)} placeholder="输入用户 ID" />
+        <button className="secondary-button compact-button" onClick={onGrant} disabled={!userId.trim()}>
+          批量授权
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function GroupMembershipPanel({
+  documentId,
+  onDocumentIdChange,
+  onAdd,
+}: {
+  documentId: string;
+  onDocumentIdChange: (value: string) => void;
+  onAdd: () => void;
+}) {
+  return (
+    <div className="permission-panel">
+      <span>把知识文档加入这个分组</span>
+      <div className="permission-form">
+        <input value={documentId} onChange={(event) => onDocumentIdChange(event.target.value)} placeholder="输入知识文档 ID" />
+        <button className="secondary-button compact-button" onClick={onAdd} disabled={!documentId.trim()}>
+          加入分组
+        </button>
+      </div>
     </div>
   );
 }
@@ -496,6 +840,8 @@ function SupportOperationsPanel({
       <div className="operations-grid">
         <MetricCard label="知识文章" value={metrics.knowledge_documents} />
         <MetricCard label="答案片段" value={metrics.answer_fragments} />
+        <MetricCard label="已解析文档" value={metrics.parsed_documents} />
+        <MetricCard label="已索引文档" value={metrics.indexed_documents} />
         <MetricCard label="查询次数" value={metrics.total_queries} />
         <MetricCard label="命中率" value={typeof metrics.hit_rate === "number" ? `${Math.round(metrics.hit_rate * 100)}%` : "0%"} />
         <MetricCard label="无答案问题" value={metrics.unanswered_questions} tone="warning" />
@@ -532,6 +878,14 @@ function SupportOperationsPanel({
           <CompactList items={dashboard?.popular_questions ?? []} titleKey="question" subtitleKey="count" emptyText="暂无查询记录" />
         </section>
 
+        <section className="ops-section">
+          <h2>
+            <FileText size={16} />
+            最近知识
+          </h2>
+          <CompactList items={dashboard?.recent_documents ?? []} titleKey="title" subtitleKey="index_status" emptyText="暂无知识文档" />
+        </section>
+
         <section className="ops-section import-section">
           <h2>
             <Upload size={16} />
@@ -544,6 +898,7 @@ function SupportOperationsPanel({
             <span>PDF</span>
             <span>Word</span>
             <span>Excel</span>
+            <span>Image OCR</span>
           </div>
           <label className="inline-select">
             <span>文本格式</span>
@@ -558,7 +913,7 @@ function SupportOperationsPanel({
             <span>{loadingFaqFile ? "加载中" : "选择知识文档"}</span>
             <input
               type="file"
-              accept=".csv,.txt,.md,.markdown,.pdf,.docx,.xlsx,text/csv,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              accept=".csv,.txt,.md,.markdown,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.bmp,text/csv,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/png,image/jpeg,image/webp,image/bmp"
               disabled={loadingFaqFile || importingFaq}
               onChange={(event) => {
                 onFaqFileChange(event.target.files?.[0] ?? null);
@@ -704,104 +1059,80 @@ function RelatedSection({
 }
 
 async function fetchOverviewWithFallback(backendUrl: string, headers: HeadersInit, industry: string): Promise<Response> {
-  const candidates = [backendUrl, ...localBackendFallbacks].filter((url, index, urls) => urls.indexOf(url) === index);
-  let lastError = "";
-
-  for (const candidate of candidates) {
-    try {
-      const response = await fetch(`${candidate.replace(/\/$/, "")}/api/database/overview?industry=${encodeURIComponent(industry)}`, { headers });
-      if (response.ok) return response;
-      const detail = await readError(response);
-      lastError = `${candidate}: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`;
-    } catch (error) {
-      lastError = `${candidate}: ${error instanceof Error ? error.message : "请求失败"}`;
-    }
-  }
-
-  throw new Error(lastError || "无法连接后端");
+  return fetchWithFallback(backendUrl, `/api/database/overview?industry=${encodeURIComponent(industry)}`, { headers });
 }
 
 async function fetchRelatedInfoWithFallback(backendUrl: string, customerName: string, headers: HeadersInit, industry: string): Promise<Response> {
-  const candidates = [backendUrl, ...localBackendFallbacks].filter((url, index, urls) => urls.indexOf(url) === index);
-  let lastError = "";
-
-  for (const candidate of candidates) {
-    try {
-      const response = await fetch(
-        `${candidate.replace(/\/$/, "")}/api/database/customers/${encodeURIComponent(customerName)}/related?industry=${encodeURIComponent(industry)}`,
-        { headers },
-      );
-      if (response.ok) return response;
-      const detail = await readError(response);
-      lastError = `${candidate}: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`;
-    } catch (error) {
-      lastError = `${candidate}: ${error instanceof Error ? error.message : "请求失败"}`;
-    }
-  }
-
-  throw new Error(lastError || "无法连接后端");
+  return fetchWithFallback(backendUrl, `/api/database/customers/${encodeURIComponent(customerName)}/related?industry=${encodeURIComponent(industry)}`, { headers });
 }
 
 async function fetchSupportDashboardWithFallback(backendUrl: string, headers: HeadersInit): Promise<Response> {
-  const candidates = [backendUrl, ...localBackendFallbacks].filter((url, index, urls) => urls.indexOf(url) === index);
-  let lastError = "";
-
-  for (const candidate of candidates) {
-    try {
-      const response = await fetch(`${candidate.replace(/\/$/, "")}/api/database/support/dashboard`, { headers });
-      if (response.ok) return response;
-      const detail = await readError(response);
-      lastError = `${candidate}: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`;
-    } catch (error) {
-      lastError = `${candidate}: ${error instanceof Error ? error.message : "请求失败"}`;
-    }
-  }
-
-  throw new Error(lastError || "无法连接后端");
+  return fetchWithFallback(backendUrl, "/api/database/support/dashboard", { headers });
 }
 
 async function fetchImportFaqWithFallback(backendUrl: string, headers: HeadersInit, text: string, sourceType: string): Promise<Response> {
-  const candidates = [backendUrl, ...localBackendFallbacks].filter((url, index, urls) => urls.indexOf(url) === index);
-  let lastError = "";
-
-  for (const candidate of candidates) {
-    try {
-      const response = await fetch(`${candidate.replace(/\/$/, "")}/api/database/support/import-faq`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ text, source_type: sourceType }),
-      });
-      if (response.ok) return response;
-      const detail = await readError(response);
-      lastError = `${candidate}: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`;
-    } catch (error) {
-      lastError = `${candidate}: ${error instanceof Error ? error.message : "请求失败"}`;
-    }
-  }
-
-  throw new Error(lastError || "无法连接后端");
+  return fetchWithFallback(backendUrl, "/api/database/support/import-faq", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ text, source_type: sourceType }),
+  });
 }
 
 async function fetchImportFileWithFallback(backendUrl: string, headers: HeadersInit, formData: FormData): Promise<Response> {
-  const candidates = [backendUrl, ...localBackendFallbacks].filter((url, index, urls) => urls.indexOf(url) === index);
-  let lastError = "";
+  return fetchWithFallback(backendUrl, "/api/database/support/import-file", {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+}
 
-  for (const candidate of candidates) {
-    try {
-      const response = await fetch(`${candidate.replace(/\/$/, "")}/api/database/support/import-file`, {
-        method: "POST",
-        headers,
-        body: formData,
-      });
-      if (response.ok) return response;
-      const detail = await readError(response);
-      lastError = `${candidate}: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`;
-    } catch (error) {
-      lastError = `${candidate}: ${error instanceof Error ? error.message : "请求失败"}`;
-    }
+async function fetchRebuildIndexWithFallback(backendUrl: string, headers: HeadersInit, documentId: string): Promise<Response> {
+  return fetchWithFallback(backendUrl, `/api/database/knowledge/${encodeURIComponent(documentId)}/rebuild-index`, {
+    method: "POST",
+    headers,
+  });
+}
+
+async function fetchUpdateUserKnowledgePolicyWithFallback(
+  backendUrl: string,
+  headers: HeadersInit,
+  userId: string,
+  policy: "all" | "own",
+): Promise<Response> {
+  return fetchWithFallback(backendUrl, `/api/database/users/${encodeURIComponent(userId)}/knowledge-policy`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ knowledge_access_policy: policy }),
+  });
+}
+
+async function fetchGrantKnowledgePermissionWithFallback(
+  backendUrl: string,
+  headers: HeadersInit,
+  documentId: string,
+  userId: string,
+): Promise<Response> {
+  return fetchWithFallback(backendUrl, `/api/database/knowledge/${encodeURIComponent(documentId)}/permissions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ user_id: userId, access_level: "read" }),
+  });
+}
+
+function jsonHeaders(apiKey: string): HeadersInit {
+  const headers: HeadersInit = { "Content-Type": "application/json" };
+  if (apiKey.trim()) {
+    headers.Authorization = `Bearer ${apiKey.trim()}`;
   }
+  return headers;
+}
 
-  throw new Error(lastError || "无法连接后端");
+async function fetchPostWithFallback(backendUrl: string, headers: HeadersInit, path: string, payload: Record<string, JsonValue>): Promise<Response> {
+  return fetchWithFallback(backendUrl, path, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
 }
 
 async function fetchUpdateUnansweredStatusWithFallback(
@@ -810,15 +1141,21 @@ async function fetchUpdateUnansweredStatusWithFallback(
   unansweredId: string,
   status: "resolved" | "ignored",
 ): Promise<Response> {
+  return fetchWithFallback(backendUrl, `/api/database/support/unanswered/${encodeURIComponent(unansweredId)}/status`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ status }),
+  });
+}
+
+async function fetchWithFallback(backendUrl: string, path: string, init: RequestInit): Promise<Response> {
   const candidates = [backendUrl, ...localBackendFallbacks].filter((url, index, urls) => urls.indexOf(url) === index);
   let lastError = "";
 
   for (const candidate of candidates) {
     try {
-      const response = await fetch(`${candidate.replace(/\/$/, "")}/api/database/support/unanswered/${encodeURIComponent(unansweredId)}/status`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ status }),
+      const response = await fetch(`${candidate.replace(/\/$/, "")}${path}`, {
+        ...init,
       });
       if (response.ok) return response;
       const detail = await readError(response);
