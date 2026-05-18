@@ -2,7 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.base import Base
-from app.models import AuditLog, Customer, KnowledgeChunk, KnowledgeDocument, Project
+from app.models import AuditLog, Customer, KnowledgeChunk, KnowledgeConflictReport, KnowledgeDocument, KnowledgeDocumentVersion, KnowledgeSourceFile, Project
 from app.services.database_overview_service import get_customer_related_info, get_database_overview
 
 
@@ -36,6 +36,59 @@ def test_default_industry_keeps_enterprise_labels():
     assert overview["title"] == "数据库记录看板"
     assert table_label(overview, "projects") == "项目"
     assert table_label(overview, "knowledge_documents") == "知识文档"
+
+
+def test_database_overview_exposes_knowledge_operations_tables_and_columns():
+    db = make_session()
+    document = KnowledgeDocument(
+        id="doc-1",
+        title="版本知识",
+        source_type="manual",
+        content_text="版本内容",
+        created_by="user-1",
+        review_status="approved",
+        publication_status="published",
+        current_version=2,
+    )
+    source_file = KnowledgeSourceFile(
+        id="file-1",
+        file_name="原文档.pdf",
+        file_path="/tmp/source.pdf",
+        uploaded_by="user-1",
+        parse_status="parsed",
+        linked_document_id="doc-1",
+    )
+    version = KnowledgeDocumentVersion(
+        id="version-1",
+        document_id="doc-1",
+        version_number=2,
+        title="版本知识",
+        content_text="版本内容",
+        source_file_id="file-1",
+        created_by="admin",
+    )
+    conflict = KnowledgeConflictReport(
+        id="conflict-1",
+        document_id="doc-1",
+        related_document_id="doc-1",
+        detail="可能冲突",
+    )
+    db.add_all([document, source_file, version, conflict])
+    db.commit()
+
+    overview = get_database_overview(db)
+    knowledge_table = table_by_id(overview, "knowledge_documents")
+    source_file_table = table_by_id(overview, "knowledge_source_files")
+    version_table = table_by_id(overview, "knowledge_document_versions")
+    conflict_table = table_by_id(overview, "knowledge_conflict_reports")
+
+    assert "review_status" in knowledge_table["columns"]
+    assert "publication_status" in knowledge_table["columns"]
+    assert "current_version" in knowledge_table["columns"]
+    assert "parse_status" in source_file_table["columns"]
+    assert "linked_document_id" in source_file_table["columns"]
+    assert version_table["rows"][0]["version_number"] == 2
+    assert conflict_table["rows"][0]["status"] == "open"
 
 
 def test_support_customer_related_info_includes_support_sections():
@@ -80,3 +133,7 @@ def test_support_customer_related_info_includes_support_sections():
 
 def table_label(overview: dict, table_id: str) -> str:
     return next(table["label"] for table in overview["tables"] if table["id"] == table_id)
+
+
+def table_by_id(overview: dict, table_id: str) -> dict:
+    return next(table for table in overview["tables"] if table["id"] == table_id)

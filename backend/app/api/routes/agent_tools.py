@@ -347,6 +347,9 @@ def kb_search(request: AgentToolRequest, db: Session = Depends(get_db)) -> Agent
                     "vector_score": row.get("vector_score", 0),
                     "retrieval_method": row.get("retrieval_method", "keyword"),
                     "source_url": row["document"].source_url,
+                    "source_file_name": row["document"].source_file_name,
+                    "source_file_path": row["document"].source_file_path,
+                    "document_version": row["document"].current_version,
                 }
                 for row in matches
             ]

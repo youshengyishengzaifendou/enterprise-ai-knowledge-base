@@ -11,10 +11,12 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     KnowledgeChunk,
+    KnowledgeConflictReport,
     KnowledgeDocument,
     KnowledgeDocumentGroup,
     KnowledgeDocumentGroupMembership,
     KnowledgeDocumentPermission,
+    KnowledgeDocumentVersion,
     KnowledgeProjectPermission,
     KnowledgeSourceFile,
     KnowledgeSourceFilePermission,
@@ -140,6 +142,8 @@ def _upsert_source_file(
     source_file.storage = payload.get("source_file_storage") or source_file.storage
     source_file.source_channel = source_channel or source_file.source_channel
     source_file.source_external_user_id = source_external_user_id or source_file.source_external_user_id
+    source_file.parse_status = str(payload.get("parse_status") or source_file.parse_status)
+    source_file.parse_error = payload.get("parse_error") or source_file.parse_error
     if payload.get("source_file_size") not in (None, ""):
         source_file.file_size = int(payload["source_file_size"])
     return source_file
@@ -232,6 +236,9 @@ def ingest_document(
         parse_status=str(payload.get("parse_status") or "parsed"),
         parse_error=payload.get("parse_error"),
         index_status=str(payload.get("index_status") or "indexed"),
+        review_status=str(payload.get("review_status") or "approved"),
+        publication_status=str(payload.get("publication_status") or "published"),
+        current_version=int(payload["current_version"]) if payload.get("current_version") not in (None, "") else 1,
         customer_id=payload.get("customer_id"),
         project_id=payload.get("project_id"),
         summary=payload.get("summary"),
@@ -240,21 +247,214 @@ def ingest_document(
     )
     db.add(document)
     db.flush()
+    if source_file is not None:
+        source_file.linked_document_id = document.id
+        source_file.parse_status = document.parse_status
+        source_file.parse_error = document.parse_error
 
-    for index, chunk_text in enumerate(build_chunks(content_text)):
+    if _is_document_retrievable(document):
+        _replace_document_chunks(db, document)
+
+    db.commit()
+    db.refresh(document)
+    return document
+
+
+def _is_document_retrievable(document: KnowledgeDocument) -> bool:
+    return (
+        document.publication_status == "published"
+        and document.review_status == "approved"
+        and document.parse_status == "parsed"
+    )
+
+
+def _replace_document_chunks(db: Session, document: KnowledgeDocument) -> None:
+    db.query(KnowledgeChunk).filter(KnowledgeChunk.document_id == document.id).delete(synchronize_session=False)
+    for index, chunk_text in enumerate(build_chunks(document.content_text)):
         chunk = KnowledgeChunk(
             document_id=document.id,
             chunk_index=index,
             content_text=chunk_text,
         )
         _index_chunk(chunk, document.title)
-        db.add(
-            chunk
-        )
+        db.add(chunk)
 
+
+def _create_document_version(db: Session, document: KnowledgeDocument, created_by: str) -> KnowledgeDocumentVersion:
+    version = KnowledgeDocumentVersion(
+        document_id=document.id,
+        version_number=document.current_version,
+        title=document.title,
+        summary=document.summary,
+        content_text=document.content_text,
+        source_file_id=document.source_file_id,
+        created_by=created_by,
+    )
+    db.add(version)
+    db.flush()
+    return version
+
+
+def publish_document(db: Session, document_id: str, *, reviewer_user_id: str) -> dict:
+    document = db.get(KnowledgeDocument, document_id)
+    if document is None:
+        raise ValueError("knowledge document not found")
+    if document.parse_status != "parsed":
+        raise ValueError("cannot publish document that failed parsing")
+    document.review_status = "approved"
+    document.publication_status = "published"
+    document.index_status = "indexed"
+    document.reviewed_by = reviewer_user_id
+    document.reviewed_at = datetime.now()
+    existing_versions = db.scalars(
+        select(KnowledgeDocumentVersion).where(KnowledgeDocumentVersion.document_id == document.id)
+    ).all()
+    if existing_versions:
+        document.current_version = max(version.version_number for version in existing_versions) + 1
+    else:
+        document.current_version = max(document.current_version or 1, 1)
+    _replace_document_chunks(db, document)
+    version = _create_document_version(db, document, reviewer_user_id)
+    similar_documents = detect_similar_documents(db, document)
+    conflict_reports = detect_conflicts(db, document, similar_documents)
     db.commit()
     db.refresh(document)
-    return document
+    db.refresh(version)
+    return {
+        "ok": True,
+        "document": _serialize_document_state(document),
+        "version": _serialize_document_version(version),
+        "similar_documents": similar_documents,
+        "conflict_reports": conflict_reports,
+    }
+
+
+def reject_document(db: Session, document_id: str, *, reviewer_user_id: str, reason: str | None = None) -> dict:
+    document = db.get(KnowledgeDocument, document_id)
+    if document is None:
+        raise ValueError("knowledge document not found")
+    document.review_status = "rejected"
+    document.publication_status = "draft"
+    document.index_status = "rejected"
+    document.reviewed_by = reviewer_user_id
+    document.reviewed_at = datetime.now()
+    if reason:
+        document.parse_error = reason
+    db.query(KnowledgeChunk).filter(KnowledgeChunk.document_id == document.id).delete(synchronize_session=False)
+    db.commit()
+    db.refresh(document)
+    return {"ok": True, "document": _serialize_document_state(document)}
+
+
+def _serialize_document_state(document: KnowledgeDocument) -> dict:
+    return {
+        "id": document.id,
+        "title": document.title,
+        "review_status": document.review_status,
+        "publication_status": document.publication_status,
+        "parse_status": document.parse_status,
+        "index_status": document.index_status,
+        "current_version": document.current_version,
+    }
+
+
+def _serialize_document_version(version: KnowledgeDocumentVersion) -> dict:
+    return {
+        "id": version.id,
+        "document_id": version.document_id,
+        "version_number": version.version_number,
+        "title": version.title,
+        "created_by": version.created_by,
+        "created_at": version.created_at,
+    }
+
+
+def detect_similar_documents(db: Session, document: KnowledgeDocument, limit: int = 5) -> list[dict]:
+    document_tokens = set(_tokenize_for_retrieval(f"{document.title}\n{document.content_text}"))
+    if not document_tokens:
+        return []
+    candidates = db.scalars(
+        select(KnowledgeDocument)
+        .where(KnowledgeDocument.id != document.id, KnowledgeDocument.parse_status == "parsed")
+        .order_by(KnowledgeDocument.updated_at.desc())
+    ).all()
+    matches: list[dict] = []
+    for candidate in candidates:
+        candidate_tokens = set(_tokenize_for_retrieval(f"{candidate.title}\n{candidate.content_text}"))
+        if not candidate_tokens:
+            continue
+        overlap = len(document_tokens & candidate_tokens)
+        score = overlap / max(len(document_tokens | candidate_tokens), 1)
+        title_bonus = 0.2 if document.title[:4] and document.title[:4] in candidate.title else 0
+        final_score = round(min(score + title_bonus, 1.0), 4)
+        if final_score >= 0.08:
+            matches.append(
+                {
+                    "document_id": candidate.id,
+                    "document_title": candidate.title,
+                    "score": final_score,
+                    "current_version": candidate.current_version,
+                }
+            )
+    matches.sort(key=lambda item: item["score"], reverse=True)
+    return matches[:limit]
+
+
+def detect_conflicts(db: Session, document: KnowledgeDocument, similar_documents: list[dict]) -> list[dict]:
+    reports: list[dict] = []
+    for item in similar_documents:
+        related = db.get(KnowledgeDocument, item["document_id"])
+        if related is None:
+            continue
+        detail = _conflict_detail(document.content_text, related.content_text)
+        if not detail:
+            continue
+        exists = db.scalar(
+            select(KnowledgeConflictReport).where(
+                KnowledgeConflictReport.document_id == document.id,
+                KnowledgeConflictReport.related_document_id == related.id,
+                KnowledgeConflictReport.status == "open",
+            )
+        )
+        if exists is None:
+            exists = KnowledgeConflictReport(
+                document_id=document.id,
+                related_document_id=related.id,
+                conflict_type="possible_conflict",
+                detail=detail,
+            )
+            db.add(exists)
+            db.flush()
+        reports.append(
+            {
+                "id": exists.id,
+                "document_id": document.id,
+                "related_document_id": related.id,
+                "related_document_title": related.title,
+                "detail": detail,
+                "status": exists.status,
+            }
+        )
+    return reports
+
+
+def _conflict_detail(left: str, right: str) -> str:
+    opposing_pairs = (
+        ("可以", "不可以"),
+        ("允许", "不允许"),
+        ("可退", "不可退"),
+        ("退款", "不退款"),
+        ("启用", "禁用"),
+        ("yes", "no"),
+        ("allow", "deny"),
+        ("can", "cannot"),
+    )
+    for positive, negative in opposing_pairs:
+        if positive in left and negative in right:
+            return f"当前文档包含“{positive}”，相似文档包含“{negative}”。"
+        if negative in left and positive in right:
+            return f"当前文档包含“{negative}”，相似文档包含“{positive}”。"
+    return ""
 
 
 def find_source_files(
@@ -472,6 +672,7 @@ def search_knowledge(
         document
         for document in documents
         if can_access_document(db, user, document)
+        and _is_document_retrievable(document)
         and (not project_id or document.project_id == project_id)
         and (not customer_id or document.customer_id == customer_id)
     ]
@@ -624,6 +825,7 @@ def answer_with_knowledge(
                 "source_url": row["document"].source_url,
                 "source_file_name": row["document"].source_file_name,
                 "source_file_path": row["document"].source_file_path,
+                "document_version": row["document"].current_version,
             }
             for row in matches
         ],

@@ -1,13 +1,17 @@
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_management_actor
+from app.api.deps import get_current_actor, get_management_actor
 from app.core.auth import require_agent_tool_api_key
 from app.db.session import get_db
 from app.models import KnowledgeDocument, KnowledgeSourceFile, Project, User
 from app.schemas.agent_tools import Actor
 from app.services.database_overview_service import get_customer_related_info, get_database_overview
 from app.services.identity_service import resolve_actor
+from app.services.knowledge_permission_service import can_access_source_file
 from app.services.knowledge_service import (
     add_document_to_group,
     backfill_source_files,
@@ -15,12 +19,15 @@ from app.services.knowledge_service import (
     create_document_group,
     grant_project_permission,
     grant_source_file_permission,
+    publish_document,
     rebuild_document_index,
+    reject_document,
 )
 from app.services.permission_operations_service import disable_user, grant_document_permission, sync_channel_account_alias
 from app.services.support_operations_service import get_support_operations_dashboard, import_faq_text, import_knowledge_file, update_unanswered_question_status
 
 router = APIRouter(prefix="/api/database", tags=["database"], dependencies=[Depends(require_agent_tool_api_key)])
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
 def _serialize_user_summary(user: User) -> dict[str, object]:
@@ -92,6 +99,33 @@ def knowledge_rebuild_index(document_id: str, db: Session = Depends(get_db)) -> 
         return rebuild_document_index(db, document_id)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+
+@router.post("/knowledge/{document_id}/publish")
+def knowledge_publish(
+    document_id: str,
+    db: Session = Depends(get_db),
+    actor: User = Depends(get_management_actor),
+) -> dict[str, object]:
+    try:
+        return publish_document(db, document_id, reviewer_user_id=actor.id)
+    except ValueError as error:
+        status_code = status.HTTP_404_NOT_FOUND if "not found" in str(error) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=str(error)) from error
+
+
+@router.post("/knowledge/{document_id}/reject")
+def knowledge_reject(
+    document_id: str,
+    payload: dict[str, object],
+    db: Session = Depends(get_db),
+    actor: User = Depends(get_management_actor),
+) -> dict[str, object]:
+    try:
+        return reject_document(db, document_id, reviewer_user_id=actor.id, reason=str(payload.get("reason") or "") or None)
+    except ValueError as error:
+        status_code = status.HTTP_404_NOT_FOUND if "not found" in str(error) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=str(error)) from error
 
 
 @router.post("/knowledge/source-files/backfill")
@@ -252,6 +286,35 @@ def source_file_grant_permission(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
     permission = grant_source_file_permission(db, source_file_id=source_file_id, user_id=user_id)
     return {"ok": True, "permission": {"id": permission.id, "source_file_id": permission.source_file_id, "user_id": permission.user_id}}
+
+
+@router.get("/source-files/{source_file_id}/download")
+def source_file_download(
+    source_file_id: str,
+    db: Session = Depends(get_db),
+    actor: User = Depends(get_current_actor),
+) -> FileResponse:
+    source_file = db.get(KnowledgeSourceFile, source_file_id)
+    if source_file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="source file not found")
+    if not can_access_source_file(db, actor, source_file):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="source file permission required")
+
+    source_path = _resolve_source_file_path(source_file.file_path)
+    if not source_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="source file missing on disk")
+    return FileResponse(
+        source_path,
+        media_type=source_file.mime_type or "application/octet-stream",
+        filename=source_file.file_name,
+    )
+
+
+def _resolve_source_file_path(file_path: str) -> Path:
+    path = Path(file_path)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 
 @router.post("/knowledge/groups")

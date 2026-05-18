@@ -1,5 +1,6 @@
 from collections import Counter
 import csv
+from datetime import datetime
 from io import BytesIO, StringIO
 from pathlib import Path
 import re
@@ -11,7 +12,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AuditLog, KnowledgeChunk, KnowledgeDocument, SupportUnansweredQuestion
+from app.models import AuditLog, KnowledgeChunk, KnowledgeConflictReport, KnowledgeDocument, KnowledgeSourceFile, SupportUnansweredQuestion
 from app.services.knowledge_service import ingest_document
 
 
@@ -78,6 +79,7 @@ def update_unanswered_question_status(db: Session, unanswered_id: str, *, status
 
 def get_support_operations_dashboard(db: Session, *, limit: int = 10) -> dict[str, Any]:
     total_queries = _count_kb_answer_logs(db)
+    today_queries = _count_today_kb_answer_logs(db)
     unanswered_count = int(db.scalar(select(func.count()).select_from(SupportUnansweredQuestion)) or 0)
     missed_queries = max(_count_missed_answer_logs(db), unanswered_count)
     hit_queries = max(total_queries - missed_queries, 0)
@@ -85,6 +87,9 @@ def get_support_operations_dashboard(db: Session, *, limit: int = 10) -> dict[st
     chunk_count = int(db.scalar(select(func.count()).select_from(KnowledgeChunk)) or 0)
     parsed_document_count = int(db.scalar(select(func.count()).select_from(KnowledgeDocument).where(KnowledgeDocument.parse_status == "parsed")) or 0)
     indexed_document_count = int(db.scalar(select(func.count()).select_from(KnowledgeDocument).where(KnowledgeDocument.index_status == "indexed")) or 0)
+    pending_review_count = int(db.scalar(select(func.count()).select_from(KnowledgeDocument).where(KnowledgeDocument.review_status == "pending_review")) or 0)
+    parse_failed_file_count = int(db.scalar(select(func.count()).select_from(KnowledgeSourceFile).where(KnowledgeSourceFile.parse_status == "parse_failed")) or 0)
+    open_conflict_count = int(db.scalar(select(func.count()).select_from(KnowledgeConflictReport).where(KnowledgeConflictReport.status == "open")) or 0)
 
     return {
         "ok": True,
@@ -94,14 +99,22 @@ def get_support_operations_dashboard(db: Session, *, limit: int = 10) -> dict[st
             "parsed_documents": parsed_document_count,
             "indexed_documents": indexed_document_count,
             "total_queries": total_queries,
+            "today_queries": today_queries,
             "hit_queries": hit_queries,
             "missed_queries": missed_queries,
             "unanswered_questions": unanswered_count,
             "hit_rate": round(hit_queries / total_queries, 4) if total_queries else 0,
+            "pending_review_documents": pending_review_count,
+            "parse_failed_files": parse_failed_file_count,
+            "open_conflicts": open_conflict_count,
         },
         "popular_questions": _popular_questions(db, limit),
         "recent_unanswered": list_unanswered_questions(db, limit=limit),
         "recent_documents": _recent_documents(db, limit),
+        "pending_review_documents": _pending_review_documents(db, limit),
+        "parse_failed_files": _parse_failed_files(db, limit),
+        "recent_source_files": _recent_source_files(db, limit),
+        "conflict_reports": _conflict_reports(db, limit),
     }
 
 
@@ -155,11 +168,44 @@ def import_knowledge_file(
     if not content:
         raise ValueError("file is empty")
 
+    stored_path = _store_uploaded_file(safe_filename, content)
     try:
         parsed_text = _extract_file_text(extension, content)
     except Exception as error:
-        raise ValueError(f"failed to parse file: {error}") from error
-    stored_path = _store_uploaded_file(safe_filename, content)
+        parse_error = f"failed to parse file: {error}"
+        document = ingest_document(
+            db,
+            payload={
+                "title": Path(safe_filename).stem,
+                "summary": parse_error,
+                "content_text": f"原文档已保存，但解析失败：{parse_error}",
+                "source_type": source_type or extension.lstrip(".") or "file_import",
+                "source_file_path": str(stored_path),
+                "source_file_name": safe_filename,
+                "source_file_mime_type": _mime_type_for_extension(extension),
+                "source_file_size": len(content),
+                "source_file_storage": "uploaded_copy",
+                "parse_status": "parse_failed",
+                "parse_error": parse_error,
+                "index_status": "parse_failed",
+                "review_status": "pending_review",
+                "publication_status": "draft",
+                "customer_id": customer_id,
+                "project_id": project_id,
+            },
+            user_id=user_id,
+        )
+        return {
+            "ok": False,
+            "imported_count": 0,
+            "error": parse_error,
+            "documents": [{"id": document.id, "title": document.title, "parse_status": document.parse_status}],
+            "source_file": {
+                "name": document.source_file_name,
+                "path": document.source_file_path,
+                "storage": document.source_file_storage,
+            },
+        }
     title = Path(safe_filename).stem if extension in SUPPORTED_IMAGE_EXTENSIONS else _derive_document_title(safe_filename, parsed_text)
     document = ingest_document(
         db,
@@ -174,7 +220,9 @@ def import_knowledge_file(
             "source_file_size": len(content),
             "source_file_storage": "uploaded_copy",
             "parse_status": "parsed",
-            "index_status": "indexed",
+            "index_status": "pending_review",
+            "review_status": "pending_review",
+            "publication_status": "draft",
             "customer_id": customer_id,
             "project_id": project_id,
         },
@@ -420,6 +468,12 @@ def _count_kb_answer_logs(db: Session) -> int:
     return int(db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.tool_name == "kb_answer")) or 0)
 
 
+def _count_today_kb_answer_logs(db: Session) -> int:
+    today = datetime.now().date()
+    logs = db.scalars(select(AuditLog).where(AuditLog.tool_name == "kb_answer")).all()
+    return sum(1 for log in logs if log.created_at and log.created_at.date() == today)
+
+
 def _count_missed_answer_logs(db: Session) -> int:
     return int(
         db.scalar(
@@ -464,6 +518,96 @@ def _recent_documents(db: Session, limit: int) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+def _pending_review_documents(db: Session, limit: int) -> list[dict[str, Any]]:
+    rows = db.scalars(
+        select(KnowledgeDocument)
+        .where(KnowledgeDocument.review_status == "pending_review")
+        .order_by(KnowledgeDocument.updated_at.desc())
+        .limit(limit)
+    ).all()
+    return [_serialize_document_queue_item(row) for row in rows]
+
+
+def _parse_failed_files(db: Session, limit: int) -> list[dict[str, Any]]:
+    rows = db.scalars(
+        select(KnowledgeSourceFile)
+        .where(KnowledgeSourceFile.parse_status == "parse_failed")
+        .order_by(KnowledgeSourceFile.updated_at.desc())
+        .limit(limit)
+    ).all()
+    return [_serialize_source_file(row) for row in rows]
+
+
+def _recent_source_files(db: Session, limit: int) -> list[dict[str, Any]]:
+    rows = db.scalars(select(KnowledgeSourceFile).order_by(KnowledgeSourceFile.updated_at.desc()).limit(limit)).all()
+    return [_serialize_source_file(row) for row in rows]
+
+
+def _conflict_reports(db: Session, limit: int) -> list[dict[str, Any]]:
+    rows = db.scalars(
+        select(KnowledgeConflictReport)
+        .where(KnowledgeConflictReport.status == "open")
+        .order_by(KnowledgeConflictReport.updated_at.desc())
+        .limit(limit)
+    ).all()
+    reports = []
+    for row in rows:
+        document = db.get(KnowledgeDocument, row.document_id)
+        related_document = db.get(KnowledgeDocument, row.related_document_id)
+        reports.append(
+            {
+                "id": row.id,
+                "document_id": row.document_id,
+                "document_title": document.title if document else None,
+                "related_document_id": row.related_document_id,
+                "related_document_title": related_document.title if related_document else None,
+                "conflict_type": row.conflict_type,
+                "detail": row.detail,
+                "status": row.status,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+        )
+    return reports
+
+
+def _serialize_document_queue_item(row: KnowledgeDocument) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "title": row.title,
+        "summary": row.summary,
+        "source_type": row.source_type,
+        "source_file_name": row.source_file_name,
+        "source_file_path": row.source_file_path,
+        "created_by": row.created_by,
+        "review_status": row.review_status,
+        "publication_status": row.publication_status,
+        "parse_status": row.parse_status,
+        "index_status": row.index_status,
+        "current_version": row.current_version,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _serialize_source_file(row: KnowledgeSourceFile) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "file_name": row.file_name,
+        "file_path": row.file_path,
+        "mime_type": row.mime_type,
+        "file_size": row.file_size,
+        "storage": row.storage,
+        "uploaded_by": row.uploaded_by,
+        "source_channel": row.source_channel,
+        "source_external_user_id": row.source_external_user_id,
+        "parse_status": row.parse_status,
+        "parse_error": row.parse_error,
+        "linked_document_id": row.linked_document_id,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
 
 
 def _serialize_unanswered(row: SupportUnansweredQuestion) -> dict[str, Any]:

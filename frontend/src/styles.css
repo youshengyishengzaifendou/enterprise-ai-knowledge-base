@@ -188,6 +188,29 @@ select {
   padding: 16px;
 }
 
+.onboarding-section {
+  border: 1px solid #dfe4ea;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.onboarding-steps {
+  display: grid;
+  gap: 8px;
+}
+
+.onboarding-steps span {
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 1px solid #d8e0e8;
+  border-radius: 6px;
+  background: white;
+  color: #3b4650;
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .ops-section {
   display: grid;
   align-content: start;
@@ -581,6 +604,13 @@ select {
   background: #f5f9ff;
 }
 
+.source-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .source-file-panel div {
   display: grid;
   gap: 4px;
@@ -595,6 +625,22 @@ select {
 .source-file-panel span {
   color: #68737d;
   font-size: 13px;
+}
+
+.review-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #dfe4ea;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.review-panel > span {
+  color: #3b4650;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .related-panel {

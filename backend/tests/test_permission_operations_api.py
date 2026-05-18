@@ -7,7 +7,18 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import create_app
-from app.models import Customer, KnowledgeDocument, KnowledgeDocumentPermission, KnowledgeSourceFile, KnowledgeSourceFilePermission, Project, User, UserChannelBinding
+from app.models import (
+    Customer,
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeDocumentPermission,
+    KnowledgeDocumentVersion,
+    KnowledgeSourceFile,
+    KnowledgeSourceFilePermission,
+    Project,
+    User,
+    UserChannelBinding,
+)
 
 
 def make_client() -> tuple[TestClient, Session]:
@@ -124,6 +135,46 @@ def test_agent_kb_search_rejects_unknown_actor():
     assert body["error_code"] == "UNAUTHORIZED"
 
 
+def test_agent_kb_search_includes_source_file_and_version_metadata():
+    client, db = make_client()
+    db.add_all(
+        [
+            User(id="owner", name="知识用户", role="member", status="active", knowledge_access_policy="all"),
+            KnowledgeDocument(
+                id="doc-versioned",
+                title="版本化售后政策",
+                source_type="file_upload",
+                source_file_name="售后政策.pdf",
+                source_file_path="/tmp/售后政策.pdf",
+                content_text="七天内可以退货。",
+                created_by="owner",
+                current_version=3,
+            ),
+            KnowledgeChunk(
+                document_id="doc-versioned",
+                chunk_index=0,
+                content_text="七天内可以退货。",
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/agent-tools/kb_search",
+        json={
+            "actor": {"channel": "web", "external_user_id": "owner", "internal_user_id": "owner"},
+            "input": {"query": "几天内可以退货"},
+        },
+        headers=agent_tool_headers(),
+    )
+
+    assert response.status_code == 200
+    match = response.json()["data"]["matches"][0]
+    assert match["document_version"] == 3
+    assert match["source_file_name"] == "售后政策.pdf"
+    assert match["source_file_path"] == "/tmp/售后政策.pdf"
+
+
 def test_management_endpoint_rejects_non_admin_actor():
     client, db = make_client()
     db.add_all(
@@ -161,6 +212,66 @@ def test_management_endpoint_allows_admin_actor():
 
     assert response.status_code == 200
     assert db.get(User, "member").knowledge_access_policy == "all"
+
+
+def test_management_can_publish_pending_document():
+    client, db = make_client()
+    db.add_all(
+        [
+            User(id="admin", name="管理员", role="admin", status="active", knowledge_access_policy="all"),
+            KnowledgeDocument(
+                id="doc-pending",
+                title="待审核退货规则",
+                source_type="file_upload",
+                content_text="商品签收七天内可以退货。",
+                created_by="member",
+                review_status="pending_review",
+                publication_status="draft",
+                index_status="pending_review",
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.post("/api/database/knowledge/doc-pending/publish", headers=auth_headers("admin"))
+
+    assert response.status_code == 200
+    body = response.json()
+    document = db.get(KnowledgeDocument, "doc-pending")
+    assert body["document"]["review_status"] == "approved"
+    assert body["document"]["publication_status"] == "published"
+    assert body["version"]["version_number"] == 1
+    assert document is not None
+    assert document.reviewed_by == "admin"
+    assert db.query(KnowledgeDocumentVersion).filter_by(document_id="doc-pending").count() == 1
+    assert db.query(KnowledgeChunk).filter_by(document_id="doc-pending").count() > 0
+
+
+def test_source_file_download_respects_permissions(tmp_path):
+    client, db = make_client()
+    source_path = tmp_path / "source.pdf"
+    source_path.write_bytes(b"original pdf bytes")
+    db.add_all(
+        [
+            User(id="owner", name="上传人", role="member", status="active", knowledge_access_policy="own"),
+            User(id="outsider", name="外部账号", role="member", status="active", knowledge_access_policy="own"),
+            KnowledgeSourceFile(
+                id="file-1",
+                file_name="source.pdf",
+                file_path=str(source_path),
+                uploaded_by="owner",
+                parse_status="parsed",
+            ),
+        ]
+    )
+    db.commit()
+
+    denied = client.get("/api/database/source-files/file-1/download", headers=auth_headers("outsider"))
+    allowed = client.get("/api/database/source-files/file-1/download", headers=auth_headers("owner"))
+
+    assert denied.status_code == 403
+    assert allowed.status_code == 200
+    assert allowed.content == b"original pdf bytes"
 
 
 def test_management_endpoint_syncs_channel_accounts_as_private_users():

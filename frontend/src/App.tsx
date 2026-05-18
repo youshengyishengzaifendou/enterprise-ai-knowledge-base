@@ -1,4 +1,4 @@
-import { AlertCircle, BarChart3, Copy, Database, FileText, KeyRound, Link2, RefreshCw, Search, Server, Table2, Upload } from "lucide-react";
+import { AlertCircle, BarChart3, CheckCircle2, Copy, Database, Download, FileText, KeyRound, Link2, RefreshCw, Search, Server, Settings2, Table2, Upload, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -47,6 +47,10 @@ type SupportDashboard = {
   popular_questions: Record<string, JsonValue>[];
   recent_unanswered: Record<string, JsonValue>[];
   recent_documents: Record<string, JsonValue>[];
+  pending_review_documents?: Record<string, JsonValue>[];
+  parse_failed_files?: Record<string, JsonValue>[];
+  recent_source_files?: Record<string, JsonValue>[];
+  conflict_reports?: Record<string, JsonValue>[];
 };
 
 const defaultBackendUrl = "http://127.0.0.1:8000";
@@ -228,6 +232,30 @@ function App() {
     }
   }
 
+  async function publishKnowledgeDocument(documentId: JsonValue) {
+    if (typeof documentId !== "string") return;
+    setError("");
+    try {
+      await fetchPostWithFallback(backendUrl, jsonHeaders(apiKey), `/api/database/knowledge/${encodeURIComponent(documentId)}/publish`, {});
+      await loadOverview();
+    } catch (publishError) {
+      setError(publishError instanceof Error ? publishError.message : "发布知识失败");
+    }
+  }
+
+  async function rejectKnowledgeDocument(documentId: JsonValue) {
+    if (typeof documentId !== "string") return;
+    setError("");
+    try {
+      await fetchPostWithFallback(backendUrl, jsonHeaders(apiKey), `/api/database/knowledge/${encodeURIComponent(documentId)}/reject`, {
+        reason: "管理员在运营页面拒绝",
+      });
+      await loadOverview();
+    } catch (rejectError) {
+      setError(rejectError instanceof Error ? rejectError.message : "拒绝知识失败");
+    }
+  }
+
   async function updateUserKnowledgePolicy(userId: JsonValue, policy: "all" | "own") {
     if (typeof userId !== "string") return;
     setError("");
@@ -399,6 +427,16 @@ function App() {
     await navigator.clipboard.writeText(value);
   }
 
+  async function downloadSourceFile(sourceFileId: JsonValue) {
+    if (typeof sourceFileId !== "string") return;
+    setError("");
+    try {
+      await downloadSourceFileWithFallback(backendUrl, jsonHeaders(apiKey), sourceFileId);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "下载原文档失败");
+    }
+  }
+
   function jumpToRecord(tableId: string, recordId: JsonValue) {
     if (typeof recordId !== "string") return;
     const table = data?.tables.find((candidate) => candidate.id === tableId);
@@ -471,6 +509,7 @@ function App() {
           onFaqFileChange={(file) => void loadFaqFile(file)}
           onImportFaq={() => void importFaq()}
           onUpdateUnansweredStatus={(id, status) => void updateUnansweredStatus(id, status)}
+          onPublishDocument={(id) => void publishKnowledgeDocument(id)}
         />
       ) : null}
 
@@ -596,13 +635,19 @@ function App() {
                     </button>
                   ) : null}
                   {activeTable?.id === "knowledge_documents" && selectedRow.source_file_path ? (
-                    <SourceFileActions row={selectedRow} onCopy={(value) => void copyText(value)} />
+                    <SourceFileActions row={selectedRow} onCopy={(value) => void copyText(value)} onDownload={(sourceFileId) => void downloadSourceFile(sourceFileId)} />
+                  ) : null}
+                  {activeTable?.id === "knowledge_documents" ? (
+                    <ReviewActions row={selectedRow} onPublish={() => void publishKnowledgeDocument(selectedRow.id)} onReject={() => void rejectKnowledgeDocument(selectedRow.id)} />
                   ) : null}
                   {activeTable?.id === "knowledge_documents" ? (
                     <button className="secondary-button" onClick={() => void rebuildIndex(selectedRow.id)}>
                       <RefreshCw size={16} />
                       <span>重建索引</span>
                     </button>
+                  ) : null}
+                  {activeTable?.id === "knowledge_source_files" ? (
+                    <SourceFileActions row={selectedRow} onCopy={(value) => void copyText(value)} onDownload={(sourceFileId) => void downloadSourceFile(sourceFileId)} />
                   ) : null}
                   {activeTable?.id === "knowledge_documents" ? (
                     <PermissionGrantPanel
@@ -671,17 +716,64 @@ function App() {
   );
 }
 
-function SourceFileActions({ row, onCopy }: { row: Record<string, JsonValue>; onCopy: (value: JsonValue) => void }) {
+function SourceFileActions({
+  row,
+  onCopy,
+  onDownload,
+}: {
+  row: Record<string, JsonValue>;
+  onCopy: (value: JsonValue) => void;
+  onDownload: (sourceFileId: JsonValue) => void;
+}) {
+  const fileName = row.source_file_name ?? row.file_name ?? "原始文件";
+  const filePath = row.source_file_path ?? row.file_path;
+  const storage = row.source_file_storage ?? row.storage ?? "未标注存储";
+  const sourceFileId = row.source_file_id ?? row.id;
   return (
     <div className="source-file-panel">
       <div>
-        <strong>{formatValue(row.source_file_name ?? "原始文件")}</strong>
-        <span>{formatValue(row.source_file_storage ?? "未标注存储")}</span>
+        <strong>{formatValue(fileName)}</strong>
+        <span>{formatValue(storage)}</span>
       </div>
-      <button className="secondary-button compact-button" onClick={() => onCopy(row.source_file_path)} title="复制原件路径">
-        <Copy size={16} />
-        <span>复制路径</span>
-      </button>
+      <div className="source-file-actions">
+        <button className="secondary-button compact-button" onClick={() => onCopy(filePath)} title="复制原件路径">
+          <Copy size={16} />
+          <span>复制路径</span>
+        </button>
+        <button className="secondary-button compact-button" onClick={() => onDownload(sourceFileId)} disabled={typeof sourceFileId !== "string"} title="下载原件">
+          <Download size={16} />
+          <span>下载原件</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReviewActions({
+  row,
+  onPublish,
+  onReject,
+}: {
+  row: Record<string, JsonValue>;
+  onPublish: () => void;
+  onReject: () => void;
+}) {
+  const reviewStatus = String(row.review_status ?? "");
+  const publicationStatus = String(row.publication_status ?? "");
+  const isPublished = reviewStatus === "approved" && publicationStatus === "published";
+  return (
+    <div className="review-panel">
+      <span>审核状态：{reviewStatus || "未标注"} / {publicationStatus || "未标注"}</span>
+      <div className="permission-actions">
+        <button className="secondary-button compact-button" onClick={onPublish} disabled={isPublished || row.parse_status === "parse_failed"}>
+          <CheckCircle2 size={16} />
+          发布
+        </button>
+        <button className="secondary-button compact-button danger-button" onClick={onReject} disabled={reviewStatus === "rejected"}>
+          <XCircle size={16} />
+          拒绝
+        </button>
+      </div>
     </div>
   );
 }
@@ -813,6 +905,7 @@ function SupportOperationsPanel({
   onFaqFileChange,
   onImportFaq,
   onUpdateUnansweredStatus,
+  onPublishDocument,
 }: {
   dashboard: SupportDashboard | null;
   faqText: string;
@@ -825,6 +918,7 @@ function SupportOperationsPanel({
   onFaqFileChange: (file: File | null) => void;
   onImportFaq: () => void;
   onUpdateUnansweredStatus: (id: JsonValue, status: "resolved" | "ignored") => void;
+  onPublishDocument: (id: JsonValue) => void;
 }) {
   const metrics = dashboard?.metrics ?? {};
   return (
@@ -842,12 +936,38 @@ function SupportOperationsPanel({
         <MetricCard label="答案片段" value={metrics.answer_fragments} />
         <MetricCard label="已解析文档" value={metrics.parsed_documents} />
         <MetricCard label="已索引文档" value={metrics.indexed_documents} />
+        <MetricCard label="今日查询" value={metrics.today_queries} />
         <MetricCard label="查询次数" value={metrics.total_queries} />
         <MetricCard label="命中率" value={typeof metrics.hit_rate === "number" ? `${Math.round(metrics.hit_rate * 100)}%` : "0%"} />
         <MetricCard label="无答案问题" value={metrics.unanswered_questions} tone="warning" />
+        <MetricCard label="待审核" value={metrics.pending_review_documents} tone="warning" />
+        <MetricCard label="解析失败" value={metrics.parse_failed_files} tone="warning" />
+        <MetricCard label="冲突知识" value={metrics.open_conflicts} tone="warning" />
       </div>
 
       <div className="operations-content">
+        <OnboardingPanel />
+
+        <section className="ops-section">
+          <h2>
+            <CheckCircle2 size={16} />
+            需要审核
+          </h2>
+          <CompactList
+            items={dashboard?.pending_review_documents ?? []}
+            titleKey="title"
+            subtitleKey="created_by"
+            emptyText="暂无待审核知识"
+            actions={(item) => (
+              <div className="compact-actions">
+                <button type="button" onClick={() => onPublishDocument(item.id)} disabled={item.parse_status === "parse_failed"}>
+                  发布
+                </button>
+              </div>
+            )}
+          />
+        </section>
+
         <section className="ops-section">
           <h2>
             <AlertCircle size={16} />
@@ -881,9 +1001,25 @@ function SupportOperationsPanel({
         <section className="ops-section">
           <h2>
             <FileText size={16} />
-            最近知识
+            最新上传文件
           </h2>
-          <CompactList items={dashboard?.recent_documents ?? []} titleKey="title" subtitleKey="index_status" emptyText="暂无知识文档" />
+          <CompactList items={dashboard?.recent_source_files ?? []} titleKey="file_name" subtitleKey="parse_status" emptyText="暂无原文档" />
+        </section>
+
+        <section className="ops-section">
+          <h2>
+            <XCircle size={16} />
+            解析失败
+          </h2>
+          <CompactList items={dashboard?.parse_failed_files ?? []} titleKey="file_name" subtitleKey="parse_error" emptyText="暂无解析失败文件" />
+        </section>
+
+        <section className="ops-section">
+          <h2>
+            <AlertCircle size={16} />
+            知识冲突
+          </h2>
+          <CompactList items={dashboard?.conflict_reports ?? []} titleKey="document_title" subtitleKey="detail" emptyText="暂无冲突报告" />
         </section>
 
         <section className="ops-section import-section">
@@ -943,6 +1079,23 @@ function MetricCard({ label, value, tone }: { label: string; value: JsonValue | 
       <span>{label}</span>
       <strong>{formatMetricValue(value)}</strong>
     </div>
+  );
+}
+
+function OnboardingPanel() {
+  return (
+    <section className="ops-section onboarding-section">
+      <h2>
+        <Settings2 size={16} />
+        Docker 初始化
+      </h2>
+      <div className="onboarding-steps">
+        <span>配置 API Key</span>
+        <span>设置管理员账号</span>
+        <span>同步默认全库账号</span>
+        <span>映射微信/飞书账号</span>
+      </div>
+    </section>
   );
 }
 
@@ -1133,6 +1286,28 @@ async function fetchPostWithFallback(backendUrl: string, headers: HeadersInit, p
     headers,
     body: JSON.stringify(payload),
   });
+}
+
+async function downloadSourceFileWithFallback(backendUrl: string, headers: HeadersInit, sourceFileId: string): Promise<void> {
+  const response = await fetchWithFallback(backendUrl, `/api/database/source-files/${encodeURIComponent(sourceFileId)}/download`, { headers });
+  const blob = await response.blob();
+  const filename = filenameFromContentDisposition(response.headers.get("content-disposition")) ?? `source-file-${sourceFileId}`;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function filenameFromContentDisposition(value: string | null): string | null {
+  if (!value) return null;
+  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) return decodeURIComponent(encoded);
+  const quoted = value.match(/filename="?([^";]+)"?/i)?.[1];
+  return quoted ? quoted.trim() : null;
 }
 
 async function fetchUpdateUnansweredStatusWithFallback(

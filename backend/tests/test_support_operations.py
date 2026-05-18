@@ -16,6 +16,8 @@ from app.models import (
     KnowledgeDocumentGroup,
     KnowledgeDocumentGroupMembership,
     KnowledgeDocumentPermission,
+    KnowledgeDocumentVersion,
+    KnowledgeConflictReport,
     KnowledgeProjectPermission,
     KnowledgeSourceFile,
     KnowledgeSourceFilePermission,
@@ -36,6 +38,8 @@ from app.services.knowledge_service import (
     grant_source_file_permission,
     ingest_document,
     backfill_source_files,
+    publish_document,
+    reject_document,
     rebuild_document_index,
     search_knowledge,
 )
@@ -53,6 +57,125 @@ def make_session() -> Session:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     return Session(engine)
+
+
+def test_existing_document_defaults_to_published_review_state():
+    db = make_session()
+    document = KnowledgeDocument(
+        title="历史知识",
+        source_type="manual",
+        content_text="历史知识默认仍可检索。",
+        created_by="agent-1",
+    )
+    db.add(document)
+    db.commit()
+
+    saved = db.get(KnowledgeDocument, document.id)
+
+    assert saved.review_status == "approved"
+    assert saved.publication_status == "published"
+    assert saved.current_version == 1
+
+
+def test_source_file_tracks_parse_status_and_linked_document():
+    db = make_session()
+    source_file = KnowledgeSourceFile(
+        file_name="原件.pdf",
+        file_path="/tmp/source.pdf",
+        uploaded_by="agent-1",
+    )
+    db.add(source_file)
+    db.commit()
+
+    saved = db.get(KnowledgeSourceFile, source_file.id)
+
+    assert saved.parse_status == "pending"
+    assert saved.linked_document_id is None
+
+
+def test_pending_review_document_is_not_searchable_until_published():
+    db = make_session()
+    document = ingest_document(
+        db,
+        payload={
+            "title": "待审核退款规则",
+            "content_text": "待审核内容不应该被客服检索。",
+            "review_status": "pending_review",
+            "publication_status": "draft",
+            "index_status": "pending_review",
+        },
+        user_id="agent-1",
+    )
+
+    assert search_knowledge(db, query="待审核内容", user=None) == []
+
+    published = publish_document(db, document.id, reviewer_user_id="admin")
+    matches = search_knowledge(db, query="待审核内容", user=None)
+
+    assert published["document"]["review_status"] == "approved"
+    assert published["document"]["publication_status"] == "published"
+    assert published["version"]["version_number"] == 1
+    assert matches
+
+
+def test_answer_citations_include_document_version():
+    db = make_session()
+    document = ingest_document(
+        db,
+        payload={"title": "退货政策版本", "content_text": "七天内可以退货。"},
+        user_id="agent-1",
+    )
+    publish_document(db, document.id, reviewer_user_id="admin")
+
+    result = answer_with_knowledge(db, query="几天内可以退货", user=None)
+
+    assert result["matches"][0]["document_version"] == 1
+
+
+def test_import_knowledge_file_preserves_source_file_when_parse_fails(tmp_path, monkeypatch):
+    from app.services import support_operations_service
+
+    db = make_session()
+    monkeypatch.setattr(support_operations_service, "UPLOAD_ROOT", tmp_path / "knowledge_sources")
+
+    result = import_knowledge_file(db, filename="空白.pdf", content=b"not-a-real-pdf", user_id="agent-1")
+
+    document = db.query(KnowledgeDocument).one()
+    source_file = db.query(KnowledgeSourceFile).one()
+    assert result["ok"] is False
+    assert document.parse_status == "parse_failed"
+    assert document.publication_status == "draft"
+    assert document.review_status == "pending_review"
+    assert document.index_status == "parse_failed"
+    assert source_file.parse_status == "parse_failed"
+    assert source_file.linked_document_id == document.id
+    assert list((tmp_path / "knowledge_sources").glob("*.pdf"))
+
+
+def test_publish_document_records_conflict_report_for_opposing_similar_policy():
+    db = make_session()
+    ingest_document(
+        db,
+        payload={"title": "退货政策A", "content_text": "客户七天内可以退货。"},
+        user_id="agent-1",
+    )
+    incoming = ingest_document(
+        db,
+        payload={
+            "title": "退货政策B",
+            "content_text": "客户七天内不可以退货。",
+            "review_status": "pending_review",
+            "publication_status": "draft",
+            "index_status": "pending_review",
+        },
+        user_id="agent-1",
+    )
+
+    result = publish_document(db, incoming.id, reviewer_user_id="admin")
+
+    assert result["similar_documents"]
+    assert result["conflict_reports"]
+    assert db.query(KnowledgeConflictReport).count() == 1
 
 
 def test_unanswered_question_is_captured_when_answer_has_no_match():
@@ -94,6 +217,61 @@ def test_dashboard_reports_knowledge_operations_metrics():
     assert dashboard["metrics"]["missed_queries"] == 1
     assert dashboard["metrics"]["unanswered_questions"] == 1
     assert dashboard["popular_questions"][0]["question"] == "订单未发货怎么退款"
+
+
+def test_dashboard_reports_review_parse_conflict_and_source_file_queues():
+    db = make_session()
+    pending_document = KnowledgeDocument(
+        id="doc-pending",
+        title="待审核发票规则",
+        source_type="file_upload",
+        content_text="发票规则等待管理员审核。",
+        created_by="agent-1",
+        review_status="pending_review",
+        publication_status="draft",
+        index_status="pending_review",
+    )
+    approved_document = KnowledgeDocument(
+        id="doc-approved",
+        title="已发布发票规则",
+        source_type="manual",
+        content_text="发票抬头错误可以重开。",
+        created_by="agent-1",
+    )
+    failed_file = KnowledgeSourceFile(
+        id="file-failed",
+        file_name="无法解析.pdf",
+        file_path="/tmp/无法解析.pdf",
+        uploaded_by="agent-1",
+        parse_status="parse_failed",
+        parse_error="failed to parse file",
+        linked_document_id="doc-pending",
+    )
+    parsed_file = KnowledgeSourceFile(
+        id="file-parsed",
+        file_name="已解析.docx",
+        file_path="/tmp/已解析.docx",
+        uploaded_by="agent-1",
+        parse_status="parsed",
+        linked_document_id="doc-approved",
+    )
+    conflict = KnowledgeConflictReport(
+        document_id="doc-pending",
+        related_document_id="doc-approved",
+        detail="当前文档包含冲突条款。",
+    )
+    db.add_all([pending_document, approved_document, failed_file, parsed_file, conflict])
+    db.commit()
+
+    dashboard = get_support_operations_dashboard(db)
+
+    assert dashboard["metrics"]["pending_review_documents"] == 1
+    assert dashboard["metrics"]["parse_failed_files"] == 1
+    assert dashboard["metrics"]["open_conflicts"] == 1
+    assert dashboard["pending_review_documents"][0]["id"] == "doc-pending"
+    assert dashboard["parse_failed_files"][0]["id"] == "file-failed"
+    assert dashboard["recent_source_files"][0]["file_name"] in {"无法解析.pdf", "已解析.docx"}
+    assert dashboard["conflict_reports"][0]["related_document_title"] == "已发布发票规则"
 
 
 def test_import_faq_text_creates_support_knowledge_documents():
@@ -668,6 +846,9 @@ def test_import_knowledge_file_preserves_original_file_index(tmp_path):
     assert document.source_file_path is not None
     assert Path(document.source_file_path).is_absolute()
     assert document.source_file_storage == "uploaded_copy"
+    assert document.review_status == "pending_review"
+    assert document.publication_status == "draft"
+    assert document.index_status == "pending_review"
     assert "七天内可以申请退货" in document.content_text
 
 
@@ -722,19 +903,19 @@ def test_upload_root_is_absolute_project_storage_path():
     assert support_operations_service.UPLOAD_ROOT.parts[-2:] == ("uploads", "knowledge_sources")
 
 
-def test_import_knowledge_file_does_not_store_file_when_parse_fails(tmp_path, monkeypatch):
+def test_import_knowledge_file_preserves_file_and_failure_record_when_parse_fails(tmp_path, monkeypatch):
     from app.services import support_operations_service
 
     db = make_session()
     monkeypatch.setattr(support_operations_service, "UPLOAD_ROOT", tmp_path / "knowledge_sources")
 
-    try:
-        import_knowledge_file(db, filename="空白.pdf", content=b"not-a-real-pdf", user_id="agent-1")
-    except ValueError:
-        pass
+    result = import_knowledge_file(db, filename="空白.pdf", content=b"not-a-real-pdf", user_id="agent-1")
 
-    assert db.query(KnowledgeDocument).count() == 0
-    assert list((tmp_path / "knowledge_sources").glob("*")) == []
+    document = db.query(KnowledgeDocument).one()
+    assert result["ok"] is False
+    assert document.parse_status == "parse_failed"
+    assert document.publication_status == "draft"
+    assert list((tmp_path / "knowledge_sources").glob("*"))
 
 
 def test_import_docx_records_image_context_and_ocr(monkeypatch, tmp_path):

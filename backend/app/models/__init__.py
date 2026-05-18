@@ -5,6 +5,7 @@ from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.knowledge_document_group import KnowledgeDocumentGroup, KnowledgeDocumentGroupMembership, KnowledgeProjectPermission
 from app.models.knowledge_document_permission import KnowledgeDocumentPermission
+from app.models.knowledge_document_version import KnowledgeConflictReport, KnowledgeDocumentVersion
 from app.models.knowledge_source_file import KnowledgeSourceFile, KnowledgeSourceFilePermission
 from app.models.project import Project
 from app.models.project_event import ProjectEvent
@@ -22,6 +23,8 @@ __all__ = [
     "KnowledgeDocumentGroup",
     "KnowledgeDocumentGroupMembership",
     "KnowledgeDocumentPermission",
+    "KnowledgeDocumentVersion",
+    "KnowledgeConflictReport",
     "KnowledgeProjectPermission",
     "KnowledgeSourceFile",
     "KnowledgeSourceFilePermission",
