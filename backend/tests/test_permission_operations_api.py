@@ -175,6 +175,177 @@ def test_agent_kb_search_includes_source_file_and_version_metadata():
     assert match["source_file_path"] == "/tmp/售后政策.pdf"
 
 
+def test_teacher_search_materials_uses_existing_knowledge_permissions():
+    client, db = make_client()
+    db.add_all(
+        [
+            User(id="teacher-a", name="教师A", role="member", status="active", knowledge_access_policy="own"),
+            User(id="teacher-b", name="教师B", role="member", status="active", knowledge_access_policy="own"),
+            KnowledgeDocument(
+                id="doc-function",
+                title="函数定义域讲义",
+                source_type="teacher_material",
+                summary="函数定义域与值域",
+                content_text="函数定义域需要排除分母为0、偶次根号下小于0等情况。",
+                created_by="teacher-a",
+            ),
+            KnowledgeChunk(
+                document_id="doc-function",
+                chunk_index=0,
+                content_text="函数定义域需要排除分母为0、偶次根号下小于0等情况。",
+            ),
+        ]
+    )
+    db.commit()
+
+    denied = client.post(
+        "/api/agent-tools/teacher_search_materials",
+        json={
+            "actor": {"channel": "web", "external_user_id": "teacher-b", "internal_user_id": "teacher-b"},
+            "input": {"query": "函数定义域", "limit": 5},
+        },
+        headers=agent_tool_headers(),
+    )
+    allowed = client.post(
+        "/api/agent-tools/teacher_search_materials",
+        json={
+            "actor": {"channel": "web", "external_user_id": "teacher-a", "internal_user_id": "teacher-a"},
+            "input": {"query": "函数定义域", "limit": 5},
+        },
+        headers=agent_tool_headers(),
+    )
+
+    assert denied.status_code == 200
+    assert denied.json()["data"]["materials"] == []
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body["ok"] is True
+    assert body["data"]["materials"][0]["document_title"] == "函数定义域讲义"
+    assert body["citations"][0]["type"] == "knowledge_chunk"
+
+
+def test_teacher_generate_questions_returns_questions_from_material_context():
+    client, db = make_client()
+    db.add_all(
+        [
+            User(id="teacher-a", name="教师A", role="member", status="active", knowledge_access_policy="all"),
+            KnowledgeDocument(
+                id="doc-linear",
+                title="一次函数复习资料",
+                source_type="teacher_material",
+                content_text="一次函数 y=kx+b 中，k 决定函数单调性，b 表示与 y 轴的交点。",
+                created_by="teacher-a",
+            ),
+            KnowledgeChunk(
+                document_id="doc-linear",
+                chunk_index=0,
+                content_text="一次函数 y=kx+b 中，k 决定函数单调性，b 表示与 y 轴的交点。",
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/agent-tools/teacher_generate_questions",
+        json={
+            "actor": {"channel": "web", "external_user_id": "teacher-a", "internal_user_id": "teacher-a"},
+            "input": {"topic": "一次函数", "question_type": "填空题", "difficulty": "基础", "count": 2},
+        },
+        headers=agent_tool_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert len(body["data"]["questions"]) == 2
+    assert body["data"]["questions"][0]["question_type"] == "填空题"
+    assert "一次函数" in body["data"]["questions"][0]["stem"]
+    assert body["citations"]
+
+
+def test_teacher_generate_paper_returns_docx_download_url_and_sections():
+    client, db = make_client()
+    db.add_all(
+        [
+            User(id="teacher-a", name="教师A", role="member", status="active", knowledge_access_policy="all"),
+            KnowledgeDocument(
+                id="doc-quadratic",
+                title="二次函数单元资料",
+                source_type="teacher_material",
+                content_text="二次函数图像是抛物线，顶点式可以表示顶点坐标。",
+                created_by="teacher-a",
+            ),
+            KnowledgeChunk(
+                document_id="doc-quadratic",
+                chunk_index=0,
+                content_text="二次函数图像是抛物线，顶点式可以表示顶点坐标。",
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/agent-tools/teacher_generate_paper",
+        json={
+            "actor": {"channel": "web", "external_user_id": "teacher-a", "internal_user_id": "teacher-a"},
+            "input": {
+                "topic": "二次函数",
+                "title": "二次函数单元测试",
+                "question_counts": {"选择题": 1, "解答题": 1},
+                "duration_minutes": 45,
+            },
+        },
+        headers=agent_tool_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["paper"]["title"] == "二次函数单元测试"
+    assert body["data"]["paper"]["duration_minutes"] == 45
+    assert body["data"]["download"]["format"] == "docx"
+    assert body["data"]["download"]["url"].endswith(".docx")
+    assert {section["question_type"] for section in body["data"]["paper"]["sections"]} == {"选择题", "解答题"}
+
+
+def test_teacher_export_knowledge_returns_handout_download_url():
+    client, db = make_client()
+    db.add_all(
+        [
+            User(id="teacher-a", name="教师A", role="member", status="active", knowledge_access_policy="all"),
+            KnowledgeDocument(
+                id="doc-geometry",
+                title="三角形全等资料",
+                source_type="teacher_material",
+                content_text="三角形全等常用判定包括 SSS、SAS、ASA、AAS。",
+                created_by="teacher-a",
+            ),
+            KnowledgeChunk(
+                document_id="doc-geometry",
+                chunk_index=0,
+                content_text="三角形全等常用判定包括 SSS、SAS、ASA、AAS。",
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/agent-tools/teacher_export_knowledge",
+        json={
+            "actor": {"channel": "web", "external_user_id": "teacher-a", "internal_user_id": "teacher-a"},
+            "input": {"topic": "三角形全等", "edited_points": ["掌握 SSS、SAS、ASA、AAS 判定"]},
+        },
+        headers=agent_tool_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["handout"]["topic"] == "三角形全等"
+    assert "掌握 SSS" in body["data"]["handout"]["points"][0]
+    assert body["data"]["download"]["url"].endswith(".docx")
+
+
 def test_management_endpoint_rejects_non_admin_actor():
     client, db = make_client()
     db.add_all(

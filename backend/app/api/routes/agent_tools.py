@@ -21,6 +21,12 @@ from app.services.project_service import (
 )
 from app.services.permission_service import can_access_project
 from app.services.support_operations_service import get_support_operations_dashboard, import_faq_text, list_unanswered_questions, update_unanswered_question_status
+from app.services.teacher_tools_service import (
+    export_teacher_knowledge,
+    generate_teacher_paper,
+    generate_teacher_questions,
+    search_teacher_materials,
+)
 
 router = APIRouter(prefix="/api/agent-tools", tags=["agent-tools"], dependencies=[Depends(require_agent_tool_api_key)])
 
@@ -486,3 +492,74 @@ def support_import_faq(request: AgentToolRequest, db: Session = Depends(get_db))
     )
     response = AgentToolResponse(ok=True, data=result, message=f"已导入 {result['imported_count']} 条客服 FAQ。")
     return _with_audit(db, request, response, user.id, "support_import_faq", "write")
+
+
+@router.post("/teacher_search_materials", response_model=AgentToolResponse)
+def teacher_search_materials(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "teacher_search_materials", "denied")
+    result = search_teacher_materials(
+        db,
+        query=str(request.input.get("query", "")).strip(),
+        user=user,
+        limit=int(request.input.get("limit", 5)),
+    )
+    response = AgentToolResponse(
+        ok=True,
+        data={"materials": result["materials"]},
+        citations=result["citations"],
+        message=f"找到 {len(result['materials'])} 条教师资料片段。",
+    )
+    return _with_audit(db, request, response, user.id, "teacher_search_materials", "query")
+
+
+@router.post("/teacher_generate_questions", response_model=AgentToolResponse)
+def teacher_generate_questions(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "teacher_generate_questions", "denied")
+    result = generate_teacher_questions(db, payload=request.input, user=user)
+    response = AgentToolResponse(
+        ok=True,
+        data={
+            "topic": result["topic"],
+            "question_type": result["question_type"],
+            "difficulty": result["difficulty"],
+            "questions": result["questions"],
+            "materials": result["materials"],
+        },
+        citations=result["citations"],
+        message=f"已生成 {len(result['questions'])} 道教师题目草稿。",
+    )
+    return _with_audit(db, request, response, user.id, "teacher_generate_questions", "generate")
+
+
+@router.post("/teacher_generate_paper", response_model=AgentToolResponse)
+def teacher_generate_paper(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "teacher_generate_paper", "denied")
+    result = generate_teacher_paper(db, payload=request.input, user=user)
+    response = AgentToolResponse(
+        ok=True,
+        data={"paper": result["paper"], "download": result["download"]},
+        citations=result["citations"],
+        message=f"已生成试卷《{result['paper']['title']}》。",
+    )
+    return _with_audit(db, request, response, user.id, "teacher_generate_paper", "generate")
+
+
+@router.post("/teacher_export_knowledge", response_model=AgentToolResponse)
+def teacher_export_knowledge(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "teacher_export_knowledge", "denied")
+    result = export_teacher_knowledge(db, payload=request.input, user=user)
+    response = AgentToolResponse(
+        ok=True,
+        data={"handout": result["handout"], "download": result["download"]},
+        citations=result["citations"],
+        message=f"已生成知识点整理《{result['handout']['title']}》。",
+    )
+    return _with_audit(db, request, response, user.id, "teacher_export_knowledge", "generate")

@@ -51,6 +51,7 @@ from app.services.support_operations_service import (
     list_unanswered_questions,
     update_unanswered_question_status,
 )
+from app.services.teacher_tools_service import export_teacher_knowledge, generate_teacher_paper, generate_teacher_questions, search_teacher_materials
 
 
 def make_session() -> Session:
@@ -916,6 +917,40 @@ def test_import_knowledge_file_preserves_file_and_failure_record_when_parse_fail
     assert document.parse_status == "parse_failed"
     assert document.publication_status == "draft"
     assert list((tmp_path / "knowledge_sources").glob("*"))
+
+
+def test_teacher_tools_reuse_knowledge_search_permissions_and_export_docx(tmp_path, monkeypatch):
+    from app.services import teacher_tools_service
+
+    db = make_session()
+    monkeypatch.setattr(teacher_tools_service, "TEACHER_EXPORT_ROOT", tmp_path / "teacher_exports")
+    teacher = User(id="teacher-owner", name="教师", role="member", status="active", knowledge_access_policy="own")
+    outsider = User(id="teacher-outsider", name="其他教师", role="member", status="active", knowledge_access_policy="own")
+    db.add_all([teacher, outsider])
+    db.commit()
+    ingest_document(
+        db,
+        payload={
+            "title": "函数讲义",
+            "content_text": "函数定义域需要排除分母为0、偶次根号下小于0等情况。",
+            "source_type": "teacher_material",
+        },
+        user_id="teacher-owner",
+    )
+
+    denied = search_teacher_materials(db, query="函数定义域", user=outsider)
+    allowed = search_teacher_materials(db, query="函数定义域", user=teacher)
+    questions = generate_teacher_questions(db, payload={"topic": "函数定义域", "count": 2}, user=teacher)
+    paper = generate_teacher_paper(db, payload={"topic": "函数定义域", "question_counts": {"填空题": 1}}, user=teacher)
+    handout = export_teacher_knowledge(db, payload={"topic": "函数定义域"}, user=teacher)
+
+    assert denied["materials"] == []
+    assert allowed["materials"][0]["document_title"] == "函数讲义"
+    assert len(questions["questions"]) == 2
+    assert paper["download"]["format"] == "docx"
+    assert Path(paper["download"]["path"]).is_file()
+    assert Path(handout["download"]["path"]).is_file()
+    assert handout["handout"]["points"]
 
 
 def test_import_docx_records_image_context_and_ocr(monkeypatch, tmp_path):

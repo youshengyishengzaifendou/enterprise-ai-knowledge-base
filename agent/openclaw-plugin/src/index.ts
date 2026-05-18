@@ -81,6 +81,8 @@ const PLUGIN_ID = "enterprise-ai-assistant";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
 const SUPPORT_TOOL_CONTEXT =
   "客服坐席内部知识助手：用于记录客服知识、查询标准答案、生成建议回复、查看历史相似问题；不直接自动回复终端客户。";
+const TEACHER_TOOL_CONTEXT =
+  "中学教师知识库微信助手：微信/企业微信由 OpenClaw 连接器接入，OpenClaw Agent 负责理解老师意图，本工具只调用教师资料库 API。资料库存放老师上传资料，生成题目、试卷和知识点整理由 OpenClaw Agent 编排完成。默认输出 Word docx 下载链接。";
 
 function readStringConfig(config: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = config?.[key];
@@ -241,6 +243,81 @@ const schemas = {
     },
     required: ["text"],
   },
+  teacher_search_materials: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      query: { type: "string", description: "资料、知识点或关键词，例如 函数、定义域、阅读理解。" },
+      stage: { type: "string", description: "学段：初中、高中或 all。" },
+      subject: { type: "string", description: "学科：语文、数学、英语、物理、化学或 all。" },
+      topic: { type: "string", description: "知识点；不确定时填 all。" },
+      scope: { type: "string", description: "资料范围：private、department、school 或 all。" },
+      limit: { type: "number", description: "返回片段数量，默认 5。" },
+    },
+    required: ["query"],
+  },
+  teacher_generate_questions: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      topic: { type: "string", description: "知识点，例如 函数、定义域。" },
+      question_type: { type: "string", description: "题型：选择题、填空题、简答题、解答题、综合题。" },
+      difficulty: { type: "string", description: "难度：基础、中等、提高。" },
+      count: { type: "number", description: "题目数量。" },
+      material_id: { type: "number", description: "可选资料 id；指定后基于该资料出题。" },
+    },
+    required: ["topic"],
+  },
+  teacher_generate_paper: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      topic: { type: "string", description: "试卷主知识点，例如 函数。" },
+      paper_type: { type: "string", description: "试卷类型：quiz、unit、midterm、final、layered。" },
+      title: { type: "string", description: "试卷标题；不填则自动生成。" },
+      question_counts: {
+        type: "object",
+        description: "各题型数量，例如 {\"选择题\": 5, \"填空题\": 3, \"简答题\": 2}。",
+        additionalProperties: { type: "number" },
+      },
+      subtopics: { type: "array", items: { type: "string" }, description: "需要覆盖的小知识点，例如 定义域、值域、单调性。" },
+      scores_by_type: {
+        type: "object",
+        description: "各题型分值，例如 {\"选择题\": 5, \"填空题\": 5}。",
+        additionalProperties: { type: "number" },
+      },
+      duration_minutes: { type: "number", description: "考试时长，默认 45。" },
+      include_answers: { type: "boolean", description: "Word 中是否包含答案，默认 true。" },
+      include_analysis: { type: "boolean", description: "Word 中是否包含解析，默认 true。" },
+      format: { type: "string", description: "导出格式。默认 docx，微信场景建议保持 docx。" },
+    },
+    required: ["topic"],
+  },
+  teacher_export_knowledge: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      stage: { type: "string", description: "学段：初中、高中或 all。" },
+      subject: { type: "string", description: "学科。" },
+      topic: { type: "string", description: "知识点。" },
+      title: { type: "string", description: "知识点整理标题。" },
+      edited_points: { type: "array", items: { type: "string" }, description: "老师指定或 OpenClaw 整理后的背诵清单。" },
+      web_materials: {
+        type: "array",
+        description: "可选网上资料摘要。",
+        items: {
+          type: "object",
+          additionalProperties: true,
+          properties: {
+            title: { type: "string" },
+            url: { type: "string" },
+            content: { type: "string" },
+          },
+        },
+      },
+    },
+    required: ["topic"],
+  },
 } as const;
 
 type ToolDefinition = {
@@ -316,6 +393,30 @@ const toolDefinitions: ToolDefinition[] = [
     description: `${SUPPORT_TOOL_CONTEXT} Import customer-service FAQ content into the support knowledge base from CSV/text, creating searchable knowledge articles and answer fragments.`,
     optional: false,
     parameters: schemas.support_import_faq,
+  },
+  {
+    name: "teacher_search_materials",
+    description: `${TEACHER_TOOL_CONTEXT} Search teacher-uploaded materials and chunks before answering, generating questions, or preparing a paper. Use this first when the teacher asks whether certain资料/知识点 exist.`,
+    optional: false,
+    parameters: schemas.teacher_search_materials,
+  },
+  {
+    name: "teacher_generate_questions",
+    description: `${TEACHER_TOOL_CONTEXT} Generate standalone questions from the teacher knowledge base context. Use for 微信消息 like 生成5道函数选择题、出几道定义域填空题.`,
+    optional: false,
+    parameters: schemas.teacher_generate_questions,
+  },
+  {
+    name: "teacher_generate_paper",
+    description: `${TEACHER_TOOL_CONTEXT} Generate a full test paper and return a Word docx download URL by default. Use for 单元测试卷、课堂小测、期中期末模拟、分层作业. If user does not specify format, keep docx.`,
+    optional: false,
+    parameters: schemas.teacher_generate_paper,
+  },
+  {
+    name: "teacher_export_knowledge",
+    description: `${TEACHER_TOOL_CONTEXT} Create a student memorization knowledge-point handout and return a Word docx download URL by default. Use for 整理知识点、给学生背诵、生成复习提纲.`,
+    optional: false,
+    parameters: schemas.teacher_export_knowledge,
   },
 ];
 

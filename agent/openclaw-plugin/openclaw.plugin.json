@@ -6,7 +6,7 @@
   "enabledByDefault": true,
   "name": "Enterprise AI Assistant",
   "version": "0.1.0",
-  "description": "Customer, project progress, task, and brief tools backed by the enterprise AI assistant API.",
+  "description": "Customer-support knowledge, project progress, teacher material, and document generation tools backed by the enterprise AI assistant API.",
   "entry": "dist/index.js",
   "contracts": {
     "tools": [
@@ -26,7 +26,11 @@
       "support_dashboard",
       "support_unanswered_questions",
       "support_update_unanswered_status",
-      "support_import_faq"
+      "support_import_faq",
+      "teacher_search_materials",
+      "teacher_generate_questions",
+      "teacher_generate_paper",
+      "teacher_export_knowledge"
     ]
   },
   "uiHints": {
