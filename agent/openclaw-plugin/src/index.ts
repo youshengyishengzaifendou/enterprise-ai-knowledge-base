@@ -57,6 +57,7 @@ async function runTool(toolName: string, input: Record<string, unknown>, context
         text: JSON.stringify(result),
       },
     ],
+    details: result.details,
   };
 }
 
@@ -82,7 +83,7 @@ const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
 const SUPPORT_TOOL_CONTEXT =
   "客服坐席内部知识助手：用于记录客服知识、查询标准答案、生成建议回复、查看历史相似问题；不直接自动回复终端客户。";
 const TEACHER_TOOL_CONTEXT =
-  "中学教师知识库微信助手：微信/企业微信由 OpenClaw 连接器接入，OpenClaw Agent 负责理解老师意图，本工具只调用教师资料库 API。资料库存放老师上传资料，生成题目、试卷和知识点整理由 OpenClaw Agent 编排完成。默认输出 Word docx 下载链接。";
+  "中学教师知识库微信助手：微信/企业微信由 OpenClaw 连接器接入，OpenClaw Agent 负责理解老师意图，本工具只调用教师资料库 API。资料库存放老师上传资料并返回结构化材料；Word/PDF/Excel/PPT 文件必须由 OpenClaw 使用对应 skills 生成，不由后端生成下载链接。";
 
 function readStringConfig(config: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = config?.[key];
@@ -273,7 +274,9 @@ const schemas = {
     additionalProperties: false,
     properties: {
       topic: { type: "string", description: "试卷主知识点，例如 函数。" },
-      paper_type: { type: "string", description: "试卷类型：quiz、unit、midterm、final、layered。" },
+      subject: { type: "string", description: "学科，例如 语文、数学、英语、物理、化学、生物、思想政治、历史、地理。" },
+      province: { type: "string", description: "高考省份；山东高考卷必须传 山东。" },
+      paper_type: { type: "string", description: "试卷类型：quiz、unit、midterm、final、layered、gaokao_mock。山东高考模拟卷传 gaokao_mock。" },
       title: { type: "string", description: "试卷标题；不填则自动生成。" },
       question_counts: {
         type: "object",
@@ -287,9 +290,11 @@ const schemas = {
         additionalProperties: { type: "number" },
       },
       duration_minutes: { type: "number", description: "考试时长，默认 45。" },
-      include_answers: { type: "boolean", description: "Word 中是否包含答案，默认 true。" },
-      include_analysis: { type: "boolean", description: "Word 中是否包含解析，默认 true。" },
-      format: { type: "string", description: "导出格式。默认 docx，微信场景建议保持 docx。" },
+      total_score: { type: "number", description: "总分。山东语文高考模拟卷为 150。" },
+      extra_requirements: { type: "string", description: "额外格式要求，例如严格按山东省新高考I卷语文结构。" },
+      include_answers: { type: "boolean", description: "结构化试卷材料中是否包含答案，默认 true。" },
+      include_analysis: { type: "boolean", description: "结构化试卷材料中是否包含解析，默认 true。" },
+      format: { type: "string", description: "用户期望的最终文档格式。后端不生成文件；若为 docx，请 OpenClaw 使用 docx/office-word-document skill 生成。" },
     },
     required: ["topic"],
   },
@@ -315,6 +320,24 @@ const schemas = {
           },
         },
       },
+    },
+    required: ["topic"],
+  },
+  teacher_prepare_lesson: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      stage: { type: "string", description: "学段：初中、高中。" },
+      grade: { type: "string", description: "年级，例如 初二、高一。" },
+      subject: { type: "string", description: "学科，例如 语文、数学、英语、物理、化学、生物、思想政治、历史、地理。" },
+      topic: { type: "string", description: "备课课题，例如 一次函数、劝学、牛顿第二定律。" },
+      textbook_version: { type: "string", description: "教材版本，例如 人教版、鲁教版、部编版。" },
+      lesson_hours: { type: "number", description: "课时数，默认 1。" },
+      lesson_type: { type: "string", description: "课型，例如 新授课、复习课、讲评课、实验课。" },
+      student_level: { type: "string", description: "学生基础，例如 薄弱、中等、较好。" },
+      prep_mode: { type: "string", description: "备课模式：daily 表示日常备课，polish 表示精品课打磨。" },
+      special_requirements: { type: "string", description: "老师额外要求，例如 加入小组讨论、突出高考题型、控制课堂活动数量。" },
+      confirm_before_export: { type: "boolean", description: "为 true 时只生成备课大纲草稿，等待老师确认后再由 OpenClaw 使用文档 skills 导出。" },
     },
     required: ["topic"],
   },
@@ -408,15 +431,21 @@ const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: "teacher_generate_paper",
-    description: `${TEACHER_TOOL_CONTEXT} Generate a full test paper and return a Word docx download URL by default. Use for 单元测试卷、课堂小测、期中期末模拟、分层作业. If user does not specify format, keep docx.`,
+    description: `${TEACHER_TOOL_CONTEXT} Return structured test-paper content from the teacher knowledge base. Use for 单元测试卷、课堂小测、期中期末模拟、分层作业、山东高考模拟卷. If the user wants Word/docx, call this tool for content first, then use docx or office-word-document skill to create the .docx file. For 山东高考语文模拟卷 call with subject=语文, province=山东, paper_type=gaokao_mock, format=docx.`,
     optional: false,
     parameters: schemas.teacher_generate_paper,
   },
   {
     name: "teacher_export_knowledge",
-    description: `${TEACHER_TOOL_CONTEXT} Create a student memorization knowledge-point handout and return a Word docx download URL by default. Use for 整理知识点、给学生背诵、生成复习提纲.`,
+    description: `${TEACHER_TOOL_CONTEXT} Return structured student memorization knowledge-point content from the teacher knowledge base. Use for 整理知识点、给学生背诵、生成复习提纲. If the user wants Word/docx, call this tool for content first, then use docx or office-word-document skill to create the .docx file.`,
     optional: false,
     parameters: schemas.teacher_export_knowledge,
+  },
+  {
+    name: "teacher_prepare_lesson",
+    description: `${TEACHER_TOOL_CONTEXT} Return structured lesson-prep materials from the teacher knowledge base. Use for 备课、生成教案、生成课件、精品课打磨、日常备课. If the user wants Word/PPTX, call this tool for content first, then use docx/pptx or office-word-document skill to create the final file.`,
+    optional: false,
+    parameters: schemas.teacher_prepare_lesson,
   },
 ];
 

@@ -20,6 +20,7 @@ export type AgentToolResponse = {
   confirmation: Record<string, unknown> | null;
   message: string;
   error_code?: string | null;
+  details?: Record<string, unknown>;
 };
 
 export type AgentToolClientOptions = {

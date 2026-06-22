@@ -25,6 +25,7 @@ from app.services.teacher_tools_service import (
     export_teacher_knowledge,
     generate_teacher_paper,
     generate_teacher_questions,
+    prepare_teacher_lesson,
     search_teacher_materials,
 )
 
@@ -543,9 +544,9 @@ def teacher_generate_paper(request: AgentToolRequest, db: Session = Depends(get_
     result = generate_teacher_paper(db, payload=request.input, user=user)
     response = AgentToolResponse(
         ok=True,
-        data={"paper": result["paper"], "download": result["download"]},
+        data={"paper": result["paper"], "document_instructions": result["document_instructions"]},
         citations=result["citations"],
-        message=f"已生成试卷《{result['paper']['title']}》。",
+        message=f"已整理试卷《{result['paper']['title']}》的结构化材料，请由 OpenClaw 使用 docx skill 生成 Word 文件。",
     )
     return _with_audit(db, request, response, user.id, "teacher_generate_paper", "generate")
 
@@ -558,8 +559,23 @@ def teacher_export_knowledge(request: AgentToolRequest, db: Session = Depends(ge
     result = export_teacher_knowledge(db, payload=request.input, user=user)
     response = AgentToolResponse(
         ok=True,
-        data={"handout": result["handout"], "download": result["download"]},
+        data={"handout": result["handout"], "document_instructions": result["document_instructions"]},
         citations=result["citations"],
-        message=f"已生成知识点整理《{result['handout']['title']}》。",
+        message=f"已整理知识点《{result['handout']['title']}》的结构化材料，请由 OpenClaw 使用 docx skill 生成 Word 文件。",
     )
     return _with_audit(db, request, response, user.id, "teacher_export_knowledge", "generate")
+
+
+@router.post("/teacher_prepare_lesson", response_model=AgentToolResponse)
+def teacher_prepare_lesson(request: AgentToolRequest, db: Session = Depends(get_db)) -> AgentToolResponse:
+    user = resolve_actor(db, request.actor)
+    if user is None:
+        return _with_audit(db, request, _unauthorized(), None, "teacher_prepare_lesson", "denied")
+    result = prepare_teacher_lesson(db, payload=request.input, user=user)
+    response = AgentToolResponse(
+        ok=True,
+        data={"lesson": result["lesson"], "document_instructions": result["document_instructions"]},
+        citations=result["citations"],
+        message=f"已整理教案《{result['lesson']['title']}》的结构化材料，请由 OpenClaw 使用 docx 或 pptx skill 生成最终文件。",
+    )
+    return _with_audit(db, request, response, user.id, "teacher_prepare_lesson", "generate")

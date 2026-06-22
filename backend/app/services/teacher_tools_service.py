@@ -1,16 +1,10 @@
-from pathlib import Path
 import re
-import uuid
 
 from sqlalchemy.orm import Session
 
 from app.models import KnowledgeChunk, KnowledgeDocument, User
 from app.schemas.agent_tools import Citation
 from app.services.knowledge_service import search_knowledge
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-TEACHER_EXPORT_ROOT = PROJECT_ROOT / "uploads" / "teacher_exports"
 
 
 def search_teacher_materials(
@@ -104,8 +98,15 @@ def generate_teacher_paper(
         "sections": sections,
         "materials": context_items,
     }
-    download = _write_teacher_docx(title=title, paragraphs=_paper_paragraphs(paper))
-    return {"paper": paper, "download": download, "citations": _citations_from_matches(matches)}
+    return {
+        "paper": paper,
+        "document_instructions": _document_generation_instructions(
+            title=title,
+            document_kind="teacher_paper",
+            content_key="paper",
+        ),
+        "citations": _citations_from_matches(matches),
+    }
 
 
 def export_teacher_knowledge(
@@ -134,8 +135,67 @@ def export_teacher_knowledge(
         "points": points,
         "materials": context_items,
     }
-    download = _write_teacher_docx(title=title, paragraphs=_handout_paragraphs(handout))
-    return {"handout": handout, "download": download, "citations": _citations_from_matches(matches)}
+    return {
+        "handout": handout,
+        "document_instructions": _document_generation_instructions(
+            title=title,
+            document_kind="teacher_handout",
+            content_key="handout",
+        ),
+        "citations": _citations_from_matches(matches),
+    }
+
+
+def prepare_teacher_lesson(
+    db: Session,
+    *,
+    payload: dict,
+    user: User,
+) -> dict:
+    topic = _clean_text(payload.get("topic")) or "备课主题"
+    title = _clean_text(payload.get("title")) or f"{topic}教案"
+    lesson_hours = _clamp(int(payload.get("lesson_hours") or 1), 1, 20)
+    matches = _matches_for_teacher_generation(db, topic=topic, user=user, limit=5)
+    context_items = [_context_item_from_match(row) for row in matches]
+    key_points = [_point_from_context(item["snippet"]) for item in context_items]
+    if not key_points:
+        key_points = [f"围绕{topic}明确教学重点、难点和课堂活动。"]
+
+    lesson = {
+        "title": title,
+        "topic": topic,
+        "stage": _clean_text(payload.get("stage")) or "all",
+        "grade": _clean_text(payload.get("grade")) or "all",
+        "subject": _clean_text(payload.get("subject")) or "all",
+        "textbook_version": _clean_text(payload.get("textbook_version")) or "unspecified",
+        "lesson_hours": lesson_hours,
+        "lesson_type": _clean_text(payload.get("lesson_type")) or "新授课",
+        "student_level": _clean_text(payload.get("student_level")) or "中等",
+        "prep_mode": _clean_text(payload.get("prep_mode")) or "daily",
+        "special_requirements": _clean_text(payload.get("special_requirements")),
+        "objectives": [
+            f"理解并掌握{topic}的核心概念。",
+            f"能够结合资料说明{key_points[0]}。",
+            "能够在典型题目或课堂任务中迁移应用相关知识。",
+        ],
+        "key_points": key_points,
+        "teaching_flow": [
+            {"stage": "导入", "activity": f"用问题或情境引出{topic}。"},
+            {"stage": "新知建构", "activity": "结合知识库材料讲解核心概念、公式、结论和例题。"},
+            {"stage": "课堂练习", "activity": "围绕易错点设计分层练习，及时反馈。"},
+            {"stage": "总结提升", "activity": "归纳本课知识结构，布置针对性巩固任务。"},
+        ],
+        "materials": context_items,
+    }
+    return {
+        "lesson": lesson,
+        "document_instructions": _document_generation_instructions(
+            title=title,
+            document_kind="teacher_lesson",
+            content_key="lesson",
+        ),
+        "citations": _citations_from_matches(matches),
+    }
 
 
 def _matches_for_teacher_generation(
@@ -246,46 +306,20 @@ def _question_counts(value: object) -> dict[str, int]:
     return {"选择题": 5, "填空题": 3, "简答题": 2}
 
 
-def _write_teacher_docx(*, title: str, paragraphs: list[str]) -> dict:
-    TEACHER_EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
-    safe_title = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff_.-]+", "-", title).strip("-") or "teacher-export"
-    filename = f"{safe_title}-{uuid.uuid4()}.docx"
-    output_path = TEACHER_EXPORT_ROOT / filename
-    try:
-        from docx import Document
-
-        document = Document()
-        document.add_heading(title, level=1)
-        for paragraph in paragraphs:
-            document.add_paragraph(paragraph)
-        document.save(output_path)
-    except Exception:
-        output_path.write_text("\n\n".join([title, *paragraphs]), encoding="utf-8")
+def _document_generation_instructions(*, title: str, document_kind: str, content_key: str) -> dict:
     return {
+        "owner": "openclaw",
         "format": "docx",
-        "file_name": filename,
-        "path": str(output_path),
-        "url": f"/uploads/teacher_exports/{filename}",
+        "skills": ["docx", "office-word-document"],
+        "document_kind": document_kind,
+        "content_key": content_key,
+        "suggested_file_name": f"{_safe_file_stem(title)}.docx",
+        "instruction": "后端只返回结构化知识材料。请由 OpenClaw 使用 docx 或 office-word-document skill 生成 Word 文件，并将生成的文件路径或附件返回给用户。",
     }
 
 
-def _paper_paragraphs(paper: dict) -> list[str]:
-    paragraphs = [f"考试时长：{paper['duration_minutes']}分钟", f"知识点：{paper['topic']}"]
-    for section in paper["sections"]:
-        paragraphs.append(f"{section['question_type']}（共{section['count']}题）")
-        for question in section["questions"]:
-            paragraphs.append(question["stem"])
-            if paper["include_answers"]:
-                paragraphs.append(question["answer"])
-            if paper["include_analysis"]:
-                paragraphs.append(question["analysis"])
-    return paragraphs
-
-
-def _handout_paragraphs(handout: dict) -> list[str]:
-    paragraphs = [f"知识点：{handout['topic']}", f"学段：{handout['stage']}，学科：{handout['subject']}"]
-    paragraphs.extend(f"- {point}" for point in handout["points"])
-    return paragraphs
+def _safe_file_stem(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9\u4e00-\u9fff_.-]+", "-", value).strip("-") or "teacher-document"
 
 
 def _citations_from_matches(matches: list[dict]) -> list[Citation]:

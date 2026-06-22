@@ -263,7 +263,7 @@ def test_teacher_generate_questions_returns_questions_from_material_context():
     assert body["citations"]
 
 
-def test_teacher_generate_paper_returns_docx_download_url_and_sections():
+def test_teacher_generate_paper_returns_openclaw_document_instructions_and_sections():
     client, db = make_client()
     db.add_all(
         [
@@ -303,12 +303,16 @@ def test_teacher_generate_paper_returns_docx_download_url_and_sections():
     assert body["ok"] is True
     assert body["data"]["paper"]["title"] == "二次函数单元测试"
     assert body["data"]["paper"]["duration_minutes"] == 45
-    assert body["data"]["download"]["format"] == "docx"
-    assert body["data"]["download"]["url"].endswith(".docx")
+    assert "download" not in body["data"]
+    assert body["data"]["document_instructions"]["owner"] == "openclaw"
+    assert body["data"]["document_instructions"]["format"] == "docx"
+    assert "docx" in body["data"]["document_instructions"]["skills"]
+    assert "office-word-document" in body["data"]["document_instructions"]["skills"]
+    assert "OpenClaw" in body["data"]["document_instructions"]["instruction"]
     assert {section["question_type"] for section in body["data"]["paper"]["sections"]} == {"选择题", "解答题"}
 
 
-def test_teacher_export_knowledge_returns_handout_download_url():
+def test_teacher_export_knowledge_returns_openclaw_document_instructions():
     client, db = make_client()
     db.add_all(
         [
@@ -343,7 +347,53 @@ def test_teacher_export_knowledge_returns_handout_download_url():
     assert body["ok"] is True
     assert body["data"]["handout"]["topic"] == "三角形全等"
     assert "掌握 SSS" in body["data"]["handout"]["points"][0]
-    assert body["data"]["download"]["url"].endswith(".docx")
+    assert "download" not in body["data"]
+    assert body["data"]["document_instructions"]["owner"] == "openclaw"
+    assert body["data"]["document_instructions"]["format"] == "docx"
+    assert "docx" in body["data"]["document_instructions"]["skills"]
+    assert "office-word-document" in body["data"]["document_instructions"]["skills"]
+
+
+def test_teacher_prepare_lesson_returns_openclaw_document_instructions():
+    client, db = make_client()
+    db.add_all(
+        [
+            User(id="teacher-a", name="教师A", role="member", status="active", knowledge_access_policy="all"),
+            KnowledgeDocument(
+                id="doc-physics",
+                title="牛顿第二定律资料",
+                source_type="teacher_material",
+                content_text="牛顿第二定律描述物体加速度与合外力成正比、与质量成反比。",
+                created_by="teacher-a",
+            ),
+            KnowledgeChunk(
+                document_id="doc-physics",
+                chunk_index=0,
+                content_text="牛顿第二定律描述物体加速度与合外力成正比、与质量成反比。",
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/agent-tools/teacher_prepare_lesson",
+        json={
+            "actor": {"channel": "web", "external_user_id": "teacher-a", "internal_user_id": "teacher-a"},
+            "input": {"topic": "牛顿第二定律", "subject": "物理", "grade": "高一", "lesson_hours": 2},
+        },
+        headers=agent_tool_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert "download" not in body["data"]
+    assert body["data"]["lesson"]["topic"] == "牛顿第二定律"
+    assert body["data"]["lesson"]["lesson_hours"] == 2
+    assert body["data"]["document_instructions"]["owner"] == "openclaw"
+    assert body["data"]["document_instructions"]["format"] == "docx"
+    assert "docx" in body["data"]["document_instructions"]["skills"]
+    assert "office-word-document" in body["data"]["document_instructions"]["skills"]
 
 
 def test_management_endpoint_rejects_non_admin_actor():

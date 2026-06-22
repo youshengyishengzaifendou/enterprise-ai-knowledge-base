@@ -919,11 +919,8 @@ def test_import_knowledge_file_preserves_file_and_failure_record_when_parse_fail
     assert list((tmp_path / "knowledge_sources").glob("*"))
 
 
-def test_teacher_tools_reuse_knowledge_search_permissions_and_export_docx(tmp_path, monkeypatch):
-    from app.services import teacher_tools_service
-
+def test_teacher_tools_reuse_knowledge_search_permissions_and_delegate_docx_to_openclaw():
     db = make_session()
-    monkeypatch.setattr(teacher_tools_service, "TEACHER_EXPORT_ROOT", tmp_path / "teacher_exports")
     teacher = User(id="teacher-owner", name="教师", role="member", status="active", knowledge_access_policy="own")
     outsider = User(id="teacher-outsider", name="其他教师", role="member", status="active", knowledge_access_policy="own")
     db.add_all([teacher, outsider])
@@ -947,9 +944,12 @@ def test_teacher_tools_reuse_knowledge_search_permissions_and_export_docx(tmp_pa
     assert denied["materials"] == []
     assert allowed["materials"][0]["document_title"] == "函数讲义"
     assert len(questions["questions"]) == 2
-    assert paper["download"]["format"] == "docx"
-    assert Path(paper["download"]["path"]).is_file()
-    assert Path(handout["download"]["path"]).is_file()
+    assert "download" not in paper
+    assert paper["document_instructions"]["owner"] == "openclaw"
+    assert paper["document_instructions"]["format"] == "docx"
+    assert "download" not in handout
+    assert handout["document_instructions"]["owner"] == "openclaw"
+    assert handout["document_instructions"]["format"] == "docx"
     assert handout["handout"]["points"]
 
 
